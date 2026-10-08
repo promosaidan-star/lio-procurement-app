@@ -103,10 +103,10 @@ class OrderLine(Base, CreatedAtMixin):
     )
 
     request: Mapped["ProcurementRequest"] = relationship(back_populates="order_lines")
-    article: Mapped["Article | None"] = relationship()
+    article: Mapped["Article | None"] = relationship()  # loaded with selectinload in the requests router
 
     @property
-    def article_number(self) -> str | None:
+    def article_number(self) -> str | None:  # pydantic's from_attributes reads this like a column
         return self.article.article_number if self.article else None
 
 

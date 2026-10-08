@@ -21,27 +21,27 @@ What changed versus the first version and why (see the PR description):
 * **Bounded retries and timeouts** on the OpenAI client instead of a single
   unbounded attempt.
 """
-from __future__ import annotations
+from __future__ import annotations  # forward references in type hints
 
-import difflib
-import logging
-import re
-from dataclasses import dataclass
+import difflib  # fuzzy matching of the model's chosen group name to the catalog
+import logging  # diagnostics for fuzzy matches, unknown names and failures
+import re  # variant-suffix stripping and tax-id normalisation
+from dataclasses import dataclass  # lightweight container for the compacted taxonomy
 
-from openai import LengthFinishReasonError, OpenAI
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from openai import LengthFinishReasonError, OpenAI  # client + the "output was cut off" error
+from pydantic import BaseModel  # strict schema the model must fill
+from sqlalchemy import select  # query the commodity groups
+from sqlalchemy.orm import Session  # DB session type
 
-from app.core.config import settings
-from app.models import CommodityGroup
-from app.schemas.extraction import (
+from app.core.config import settings  # API key and model name from the environment
+from app.models import CommodityGroup  # ORM row for the taxonomy
+from app.schemas.extraction import (  # wire-format models returned to the frontend
     ExtractedVendorData,
     ExtractionResponse,
     OrderLineData,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # module logger
 
 # Quotes are a few thousand characters; anything far beyond that is a catalog
 # or a contract, and the model would lose the totals in the middle of it.
@@ -50,11 +50,11 @@ MAX_INPUT_CHARS = 60_000
 # Tolerances for the arithmetic checks: per-unit prices are often rounded on
 # the quote, so lines get a loose relative tolerance; printed totals should
 # agree to the cent.
-LINE_TOLERANCE = 0.015
-TOTAL_TOLERANCE = 0.05
+LINE_TOLERANCE = 0.015  # 1.5 % relative on qty x unit price vs. line total
+TOTAL_TOLERANCE = 0.05  # 5 cents absolute on subtotal / grand total checks
 
-REQUEST_TIMEOUT_SECONDS = 60
-MAX_RETRIES = 2
+REQUEST_TIMEOUT_SECONDS = 60  # a quote should extract in seconds; do not hang the upload
+MAX_RETRIES = 2  # the SDK retries rate limits and transient errors this many times
 
 # Matches names like "Toner Cartridges — Bulk" / "Training Subscription - Annual".
 _VARIANT_SUFFIX = re.compile(r"\s+[—–-]\s+.*$")
@@ -64,29 +64,29 @@ _VARIANT_SUFFIX = re.compile(r"\s+[—–-]\s+.*$")
 # Model output schema (strict: every field required, nullable where unknown)
 # ---------------------------------------------------------------------------
 class LlmOrderLine(BaseModel):
-    position_description: str
-    unit_price: float
-    amount: float
-    unit: str
-    total_price: float
+    position_description: str  # item name plus key spec
+    unit_price: float  # before discount
+    amount: float  # quantity as printed, fractional allowed
+    unit: str  # written out: "pieces", "licenses", "sq ft"
+    total_price: float  # after any line discount
 
 
 class LlmExtraction(BaseModel):
-    title: str
-    vendor_name: str
-    tax_id: str | None
-    customer: str | None
-    order_lines: list[LlmOrderLine]
-    net_subtotal: float | None
-    shipping: float | None
-    tax: float | None
-    other_fees: float | None
-    grand_total: float | None
-    commodity_group_name: str | None
-    classification_reason: str
+    title: str  # 2-5 word purchase summary
+    vendor_name: str  # issuer of the quote
+    tax_id: str | None  # vendor EIN/VAT if printed
+    customer: str | None  # bill-to / prepared-for party if printed
+    order_lines: list[LlmOrderLine]  # chargeable items only
+    net_subtotal: float | None  # printed items subtotal before tax/shipping
+    shipping: float | None  # printed shipping amount in the totals block
+    tax: float | None  # printed tax amount
+    other_fees: float | None  # recycling fees, surcharges in the totals block
+    grand_total: float | None  # amount payable as printed
+    commodity_group_name: str | None  # one name copied from the taxonomy list, or null
+    classification_reason: str  # one sentence; makes the choice auditable
 
 
-SYSTEM_PROMPT = (
+SYSTEM_PROMPT = (  # who the model is and the one behaviour we care most about: copy, don't guess
     "You are a procurement analyst. You read vendor quotes and offers "
     "(US business documents) and fill in a structured purchase request exactly "
     "as a careful buyer would. Be literal: copy numbers from the document, never "
@@ -135,7 +135,7 @@ COMMODITY GROUPS (category: names)
 QUOTE TEXT
 <<<
 {pdf_text}
->>>"""
+>>>"""  # the quote goes last, fenced, so instructions are not confused with document text
 
 
 # ---------------------------------------------------------------------------
@@ -143,14 +143,14 @@ QUOTE TEXT
 # ---------------------------------------------------------------------------
 @dataclass
 class Taxonomy:
-    prompt_block: str
+    prompt_block: str  # "Category: name; name; ..." lines sent to the model
     by_name: dict[str, CommodityGroup]  # lower-cased canonical name -> row
-    all_ids: set[int]
+    all_ids: set[int]  # every row id, for validation
 
 
 def base_name(name: str) -> str:
     """'Toner Cartridges — Bulk' -> 'Toner Cartridges'."""
-    return _VARIANT_SUFFIX.sub("", name).strip()
+    return _VARIANT_SUFFIX.sub("", name).strip()  # cut everything from the dash separator on
 
 
 def build_taxonomy(groups: list[CommodityGroup]) -> Taxonomy:
@@ -159,20 +159,20 @@ def build_taxonomy(groups: list[CommodityGroup]) -> Taxonomy:
     The canonical row is the one whose name has no variant suffix; if a base
     name only ever appears with suffixes, the lowest id wins.
     """
-    canonical: dict[str, CommodityGroup] = {}
-    for g in sorted(groups, key=lambda g: g.id):
-        key = base_name(g.name).lower()
-        current = canonical.get(key)
-        is_plain = base_name(g.name) == g.name
-        if current is None or (is_plain and base_name(current.name) != current.name):
+    canonical: dict[str, CommodityGroup] = {}  # base name -> the row we will resolve to
+    for g in sorted(groups, key=lambda g: g.id):  # ascending id so "lowest id wins" holds
+        key = base_name(g.name).lower()  # group variants under one key
+        current = canonical.get(key)  # row chosen so far for this base name, if any
+        is_plain = base_name(g.name) == g.name  # True when this row has no suffix
+        if current is None or (is_plain and base_name(current.name) != current.name):  # first seen, or a plain row replacing a suffixed one
             canonical[key] = g
 
-    by_category: dict[str, list[str]] = {}
+    by_category: dict[str, list[str]] = {}  # category -> list of canonical names
     for g in canonical.values():
-        by_category.setdefault(g.category, []).append(base_name(g.name))
+        by_category.setdefault(g.category, []).append(base_name(g.name))  # group names under their category
     lines = [
-        f"{category}: " + "; ".join(sorted(names))
-        for category, names in sorted(by_category.items())
+        f"{category}: " + "; ".join(sorted(names))  # one compact line per category
+        for category, names in sorted(by_category.items())  # stable order for prompt caching
     ]
     return Taxonomy(
         prompt_block="\n".join(lines),
@@ -185,19 +185,19 @@ def resolve_commodity_group(
     name: str | None, taxonomy: Taxonomy
 ) -> tuple[int | None, str | None]:
     """Map the model's chosen name back to a catalog row (exact, then fuzzy)."""
-    if not name or not name.strip():
+    if not name or not name.strip():  # model said null / nothing fits
         return None, None
-    key = base_name(name).lower()
-    row = taxonomy.by_name.get(key)
-    if row is None:
+    key = base_name(name).lower()  # tolerate the model returning a variant name
+    row = taxonomy.by_name.get(key)  # exact match first
+    if row is None:  # try a close spelling ("Toner Cartridge" vs "Toner Cartridges")
         close = difflib.get_close_matches(key, list(taxonomy.by_name), n=1, cutoff=0.85)
         if close:
             row = taxonomy.by_name[close[0]]
             logger.info("Fuzzy-matched commodity group %r -> %r", name, row.name)
-    if row is None:
+    if row is None:  # the model invented a name: leave the field for the user
         logger.warning("Model returned unknown commodity group: %r", name)
         return None, None
-    return row.id, row.name
+    return row.id, row.name  # id for the FK, name for display
 
 
 # ---------------------------------------------------------------------------
@@ -205,31 +205,31 @@ def resolve_commodity_group(
 # ---------------------------------------------------------------------------
 def normalize_tax_id(value: str | None) -> str:
     """'94 1985704' / '941985704' -> '94-1985704'; other formats pass through."""
-    if not value:
+    if not value:  # None or empty
         return ""
     value = value.strip()
     if re.search(r"[A-Za-z]", value):
         return value  # EU-style VAT ids keep their country prefix untouched
-    digits = re.sub(r"\D", "", value)
-    if len(digits) == 9:
+    digits = re.sub(r"\D", "", value)  # keep digits only
+    if len(digits) == 9:  # a US EIN: two digits, dash, seven digits
         return f"{digits[:2]}-{digits[2:]}"
-    return value
+    return value  # unknown length: leave as printed
 
 
 def _close_line(a: float, b: float) -> bool:
-    return abs(a - b) <= max(1.0, LINE_TOLERANCE * max(abs(a), abs(b)))
+    return abs(a - b) <= max(1.0, LINE_TOLERANCE * max(abs(a), abs(b)))  # within 1.5 % or $1, whichever is larger
 
 
 def _close_total(a: float, b: float) -> bool:
-    return abs(a - b) <= TOTAL_TOLERANCE
+    return abs(a - b) <= TOTAL_TOLERANCE  # within 5 cents
 
 
 def check_arithmetic(ex: LlmExtraction) -> list[str]:
     """Return human-readable warnings for numbers that do not add up."""
-    warnings: list[str] = []
-    for line in ex.order_lines:
+    warnings: list[str] = []  # collected messages
+    for line in ex.order_lines:  # per-line check: qty x unit price vs. line total
         expected = line.unit_price * line.amount
-        if line.total_price and expected and not _close_line(expected, line.total_price):
+        if line.total_price and expected and not _close_line(expected, line.total_price):  # both known and they disagree
             if line.total_price < expected:
                 # Quotes often show a discount column; don't nag about those.
                 continue
@@ -238,16 +238,16 @@ def check_arithmetic(ex: LlmExtraction) -> list[str]:
                 f"= {expected:.2f} but the line total is {line.total_price:.2f}."
             )
 
-    lines_sum = sum(line.total_price for line in ex.order_lines)
-    if ex.net_subtotal is not None and ex.order_lines and not _close_total(lines_sum, ex.net_subtotal):
+    lines_sum = sum(line.total_price for line in ex.order_lines)  # what the extracted lines add up to
+    if ex.net_subtotal is not None and ex.order_lines and not _close_total(lines_sum, ex.net_subtotal):  # a line is missing or an alternative crept in
         warnings.append(
             f"The order lines add up to {lines_sum:.2f} but the quote's subtotal is "
             f"{ex.net_subtotal:.2f}. An item may be missing or an alternative may have been included."
         )
 
-    if ex.grand_total is not None:
-        base = ex.net_subtotal if ex.net_subtotal is not None else lines_sum
-        rebuilt = base + (ex.shipping or 0) + (ex.tax or 0) + (ex.other_fees or 0)
+    if ex.grand_total is not None:  # rebuild the grand total from its printed parts
+        base = ex.net_subtotal if ex.net_subtotal is not None else lines_sum  # prefer the printed subtotal
+        rebuilt = base + (ex.shipping or 0) + (ex.tax or 0) + (ex.other_fees or 0)  # None counts as zero
         if not _close_total(rebuilt, ex.grand_total):
             warnings.append(
                 f"Subtotal + shipping + tax + fees = {rebuilt:.2f} but the quote's grand total is "
@@ -257,14 +257,14 @@ def check_arithmetic(ex: LlmExtraction) -> list[str]:
 
 
 def to_vendor_data(ex: LlmExtraction, taxonomy: Taxonomy) -> ExtractedVendorData:
-    group_id, group_name = resolve_commodity_group(ex.commodity_group_name, taxonomy)
-    lines_sum = sum(line.total_price for line in ex.order_lines)
-    total = ex.grand_total if ex.grand_total is not None else lines_sum
+    group_id, group_name = resolve_commodity_group(ex.commodity_group_name, taxonomy)  # name -> catalog row
+    lines_sum = sum(line.total_price for line in ex.order_lines)  # fallback total if none was printed
+    total = ex.grand_total if ex.grand_total is not None else lines_sum  # total cost = amount payable
     return ExtractedVendorData(
         title=ex.title.strip(),
         vendor_name=ex.vendor_name.strip(),
-        vat_id=normalize_tax_id(ex.tax_id),
-        department=(ex.customer or "").strip(),
+        vat_id=normalize_tax_id(ex.tax_id),  # "94 1985704" -> "94-1985704"
+        department=(ex.customer or "").strip(),  # the form calls the customer field "department"
         order_lines=[
             OrderLineData(
                 position_description=line.position_description.strip(),
@@ -273,16 +273,16 @@ def to_vendor_data(ex: LlmExtraction, taxonomy: Taxonomy) -> ExtractedVendorData
                 unit=line.unit.strip(),
                 total_price=line.total_price,
             )
-            for line in ex.order_lines
+            for line in ex.order_lines  # one wire-format line per model line
         ],
-        total_cost=round(total, 2),
+        total_cost=round(total, 2),  # money to the cent
         commodity_group_id=group_id,
         commodity_group_name=group_name,
     )
 
 
 def missing_fields_for(data: ExtractedVendorData) -> list[str]:
-    missing: list[str] = []
+    missing: list[str] = []  # labels match the form so the user knows what to fill in
     if not data.title:
         missing.append("Title/Short Description")
     if not data.vendor_name:
@@ -307,20 +307,20 @@ def _call_model(pdf_text: str, taxonomy: Taxonomy) -> LlmExtraction:
     """One structured-output call. Separated so tests can replace it."""
     client = OpenAI(
         api_key=settings.openai_api_key,
-        timeout=REQUEST_TIMEOUT_SECONDS,
+        timeout=REQUEST_TIMEOUT_SECONDS,  # per-request ceiling
         max_retries=MAX_RETRIES,  # SDK retries 408/409/429/5xx and connection errors
     )
-    completion = client.chat.completions.parse(
+    completion = client.chat.completions.parse(  # parse(): enforce the Pydantic schema on the output
         model=settings.openai_model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _build_prompt(pdf_text, taxonomy.prompt_block)},
         ],
-        response_format=LlmExtraction,
-        max_completion_tokens=6000,
-        temperature=0,
+        response_format=LlmExtraction,  # strict JSON schema derived from the model class
+        max_completion_tokens=6000,  # enough for dozens of lines; LengthFinishReasonError if exceeded
+        temperature=0,  # deterministic copying, not creativity
     )
-    parsed = completion.choices[0].message.parsed
+    parsed = completion.choices[0].message.parsed  # already validated LlmExtraction, or None on refusal
     if parsed is None:
         raise ValueError("The model returned no structured data (possibly a refusal).")
     return parsed
@@ -328,31 +328,31 @@ def _call_model(pdf_text: str, taxonomy: Taxonomy) -> LlmExtraction:
 
 def extract_vendor_data(pdf_text: str, db: Session) -> ExtractionResponse:
     """Extract vendor data and classify the commodity group in one AI call."""
-    if not pdf_text or not pdf_text.strip():
+    if not pdf_text or not pdf_text.strip():  # nothing to work with
         return ExtractionResponse(success=False, error="No text provided for extraction")
 
-    if not settings.openai_api_key:
+    if not settings.openai_api_key:  # the app runs without a key; only this feature needs one
         return ExtractionResponse(
             success=False,
             error="OPENAI_API_KEY is not configured on the server",
         )
 
-    groups = list(db.scalars(select(CommodityGroup).order_by(CommodityGroup.id)))
-    if not groups:
+    groups = list(db.scalars(select(CommodityGroup).order_by(CommodityGroup.id)))  # full taxonomy from the DB
+    if not groups:  # seed did not run
         return ExtractionResponse(
             success=False,
             error="Failed to load commodity groups for classification",
         )
-    taxonomy = build_taxonomy(groups)
+    taxonomy = build_taxonomy(groups)  # 2,000 rows -> ~380 names
 
     text = pdf_text.strip()
-    if len(text) > MAX_INPUT_CHARS:
+    if len(text) > MAX_INPUT_CHARS:  # defensive cap, see the constant's comment
         logger.info("Truncating extraction input from %d chars", len(text))
         text = text[:MAX_INPUT_CHARS]
 
     try:
-        extraction = _call_model(text, taxonomy)
-    except LengthFinishReasonError:
+        extraction = _call_model(text, taxonomy)  # the one network call
+    except LengthFinishReasonError:  # output hit max_completion_tokens
         logger.exception("Model output truncated")
         return ExtractionResponse(
             success=False,
@@ -362,10 +362,10 @@ def extract_vendor_data(pdf_text: str, db: Session) -> ExtractionResponse:
         logger.exception("Error extracting vendor data")
         return ExtractionResponse(success=False, error=f"Extraction failed: {exc}")
 
-    data = to_vendor_data(extraction, taxonomy)
+    data = to_vendor_data(extraction, taxonomy)  # model shape -> wire shape
     return ExtractionResponse(
         success=True,
         data=data,
-        missing_fields=missing_fields_for(data) or None,
-        warnings=check_arithmetic(extraction) or None,
+        missing_fields=missing_fields_for(data) or None,  # None instead of [] keeps the old envelope
+        warnings=check_arithmetic(extraction) or None,  # same
     )

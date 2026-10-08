@@ -83,10 +83,10 @@ def count_articles(
     return {"count": total}
 
 
-@router.post("/suggest", response_model=SuggestResponse, response_model_by_alias=True)
+@router.post("/suggest", response_model=SuggestResponse, response_model_by_alias=True)  # camelCase on the wire
 def suggest_articles(
-    payload: SuggestRequest,
-    membership: OrganizationMember = Depends(get_current_membership),
+    payload: SuggestRequest,  # {"lines": [{"positionDescription": ...}], "limit": 3}
+    membership: OrganizationMember = Depends(get_current_membership),  # resolves the caller's organization
     db: Session = Depends(get_db),
 ) -> SuggestResponse:
     """Match free-text order lines against the organization's article catalog.
@@ -95,17 +95,17 @@ def suggest_articles(
     prices (best match first, cheapest first among equal matches). Used by the
     request form to offer "use the negotiated price" inline.
     """
-    articles = list(
+    articles = list(  # the whole org catalog, a few thousand rows at most
         db.scalars(
             select(Article)
-            .where(Article.organization_id == membership.organization_id)
-            .options(joinedload(Article.supplier))
+            .where(Article.organization_id == membership.organization_id)  # tenant isolation
+            .options(joinedload(Article.supplier))  # supplier name in the same query
         )
     )
-    index = CatalogIndex(articles)
+    index = CatalogIndex(articles)  # tokenise + IDF once per request, reused for every line
     suggestions = [
         [
-            ArticleSuggestion(
+            ArticleSuggestion(  # ORM row + score -> wire format
                 article_id=m.article.id,
                 article_number=m.article.article_number,
                 description=m.article.description,
@@ -117,8 +117,8 @@ def suggest_articles(
                 score=m.score,
                 matched_terms=m.matched_terms,
             )
-            for m in index.suggest(line.position_description, limit=payload.limit)
+            for m in index.suggest(line.position_description, limit=payload.limit)  # best matches for this line
         ]
-        for line in payload.lines
+        for line in payload.lines  # one inner list per input line, same order
     ]
     return SuggestResponse(suggestions=suggestions)

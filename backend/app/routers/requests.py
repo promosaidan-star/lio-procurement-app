@@ -45,7 +45,7 @@ _FIELD_LABELS = {
 
 def _load_request_options():
     return (
-        selectinload(ProcurementRequest.order_lines).selectinload(OrderLine.article),
+        selectinload(ProcurementRequest.order_lines).selectinload(OrderLine.article),  # article_number on each line without N+1
         selectinload(ProcurementRequest.commodity_group),
     )
 
@@ -54,17 +54,17 @@ def _validate_article_ids(
     db: Session, organization_id: uuid.UUID, lines: list
 ) -> None:
     """Every referenced catalog article must exist in this organization."""
-    wanted = {line.article_id for line in lines if line.article_id is not None}
-    if not wanted:
+    wanted = {line.article_id for line in lines if line.article_id is not None}  # ids the client sent
+    if not wanted:  # no catalog links on this request
         return
-    found = set(
+    found = set(  # ids that exist AND belong to the caller's org, in one query
         db.scalars(
             select(Article.id).where(
                 Article.id.in_(wanted), Article.organization_id == organization_id
             )
         )
     )
-    missing = wanted - found
+    missing = wanted - found  # anything made up or from another tenant
     if missing:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -231,7 +231,7 @@ def create_request(
             unit=line.unit,
             total_price=line.total_price,
             line_order=index + 1,
-            article_id=line.article_id,
+            article_id=line.article_id,  # catalog link, validated above
         )
         for index, line in enumerate(payload.order_lines)
     ]
@@ -275,7 +275,7 @@ def update_request(
             unit=line.unit,
             total_price=line.total_price,
             line_order=index + 1,
-            article_id=line.article_id,
+            article_id=line.article_id,  # catalog link, validated above
         )
         for index, line in enumerate(payload.order_lines)
     ]

@@ -1,17 +1,19 @@
 """Catalog suggestions (task 2): match order lines to negotiated articles."""
-import uuid
+import uuid  # fake ids for the stand-in articles and the "foreign article" case
 
-from sqlalchemy import select
+from sqlalchemy import select  # look up a real seeded article
 
-from app.models import Article, Organization
-from app.services.catalog import CatalogIndex, tokenize
-from tests.test_smoke import TestingSession, _auth, _signin, client
+from app.models import Article, Organization  # ORM rows
+from app.services.catalog import CatalogIndex, tokenize  # the matcher under test
+from tests.test_smoke import TestingSession, _auth, _signin, client  # shared seeded test app
 
 
 # ---------------------------------------------------------------------------
 # Matcher
 # ---------------------------------------------------------------------------
 class _Art:
+    """Stand-in for an Article row with just the attributes the matcher reads."""
+
     def __init__(self, number, description, price, supplier="S"):
         self.id = uuid.uuid4()
         self.article_number = number
@@ -24,66 +26,66 @@ class _Art:
 
 
 def test_tokenize_stems_and_drops_noise():
-    assert tokenize("Toner cartridges, black (high-yield) for the printer") == {
+    assert tokenize("Toner cartridges, black (high-yield) for the printer") == {  # plurals stemmed, "for"/"the" dropped
         "toner", "cartridge", "black", "high", "yield", "printer",
     }
-    assert tokenize('13" MacBook Air') == {"13", "macbook", "air"}
+    assert tokenize('13" MacBook Air') == {"13", "macbook", "air"}  # numbers kept, quote mark ignored
 
 
 def test_best_match_first_then_cheapest():
     idx = CatalogIndex(
         [
-            _Art("A1", "Toner cartridge black, high-yield", 186.0),
-            _Art("A2", "Toner cartridge black, high-yield", 139.0),
-            _Art("A3", "Toner cartridge cyan", 95.0),
-            _Art("A4", "Black marker set", 4.0),
-            _Art("A5", "Stretch film machine grade", 8.0),
+            _Art("A1", "Toner cartridge black, high-yield", 186.0),  # same text, dearer
+            _Art("A2", "Toner cartridge black, high-yield", 139.0),  # same text, cheaper
+            _Art("A3", "Toner cartridge cyan", 95.0),  # shares two words
+            _Art("A4", "Black marker set", 4.0),  # shares one word only
+            _Art("A5", "Stretch film machine grade", 8.0),  # shares nothing
         ]
     )
     got = idx.suggest("Toner cartridge black", limit=5)
     numbers = [m.article.article_number for m in got]
     assert numbers[:2] == ["A2", "A1"]  # same text, cheaper negotiated price first
     assert "A5" not in numbers  # no shared meaningful term
-    assert got[0].matched_terms == ["black", "cartridge", "toner"]
+    assert got[0].matched_terms == ["black", "cartridge", "toner"]  # sorted, stemmed
 
 
 def test_rare_terms_outweigh_common_ones():
     idx = CatalogIndex(
         [
-            _Art("M1", "Framed preserved moss panel with company logo cut-out", 320.0),
+            _Art("M1", "Framed preserved moss panel with company logo cut-out", 320.0),  # shares "moss" and "panel"
             _Art("P1", "Strapping PET 5/8 in", 32.0),
             _Art("P2", "Pallet wrap 18 in", 20.0),
             _Art("P3", "Tape 2 in", 3.0),
         ]
     )
     got = idx.suggest("Moss Art Panel, Mixed Moss 63 x 31.5 in", limit=3)
-    assert got and got[0].article.article_number == "M1"
-    assert all(m.article.article_number != "P3" for m in got)
+    assert got and got[0].article.article_number == "M1"  # the moss panel wins
+    assert all(m.article.article_number != "P3" for m in got)  # "in" is a stopword, so no match
 
 
 def test_no_match_for_unrelated_text():
     idx = CatalogIndex([_Art("A1", "Toner cartridge black", 10.0)])
-    assert idx.suggest("Grinding machine HW-GS 450") == []
-    assert idx.suggest("") == []
+    assert idx.suggest("Grinding machine HW-GS 450") == []  # no vocabulary overlap
+    assert idx.suggest("") == []  # empty query
 
 
 # ---------------------------------------------------------------------------
 # Endpoint, on the seeded Acme catalog
 # ---------------------------------------------------------------------------
 def test_suggest_endpoint_matches_seeded_catalog_and_is_org_scoped():
-    token = _signin("requester@acme.com")
+    token = _signin("requester@acme.com")  # a requester, the role that creates requests
     lines = [
-        {"positionDescription": "Toner cartridge black, high-yield"},
-        {"positionDescription": "Moss Art Panel, Mixed Moss 63 x 31.5 in"},
-        {"positionDescription": "Grinding machine HW-GS 450"},
+        {"positionDescription": "Toner cartridge black, high-yield"},  # on catalog from several suppliers
+        {"positionDescription": "Moss Art Panel, Mixed Moss 63 x 31.5 in"},  # the Greenmantle quote line
+        {"positionDescription": "Grinding machine HW-GS 450"},  # nothing like it on catalog
     ]
     r = client.post("/articles/suggest", json={"lines": lines}, headers=_auth(token))
     assert r.status_code == 200, r.text
-    toner, moss, grinder = r.json()["suggestions"]
+    toner, moss, grinder = r.json()["suggestions"]  # one list per input line, same order
 
-    assert len(toner) == 3
+    assert len(toner) == 3  # default limit
     assert all("toner" in s["description"].lower() for s in toner)
-    assert toner[0]["supplierName"] and toner[0]["articleNumber"]
+    assert toner[0]["supplierName"] and toner[0]["articleNumber"]  # supplier is joined in
     # all top matches are the same article text -> ordered by negotiated price
     prices = [s["unitPrice"] for s in toner if s["description"] == toner[0]["description"]]
     assert prices == sorted(prices)
@@ -103,26 +105,26 @@ def test_suggest_endpoint_matches_seeded_catalog_and_is_org_scoped():
 
 def test_request_records_catalog_article_and_rejects_foreign_ones():
     token = _signin("requester@acme.com")
-    with TestingSession() as db:
+    with TestingSession() as db:  # pick a real Acme article straight from the DB
         acme = db.scalar(select(Organization).where(Organization.slug == "acme"))
         article = db.scalar(
             select(Article)
             .where(Article.organization_id == acme.id)
             .order_by(Article.article_number)
         )
-        article_id, article_number, price = (
+        article_id, article_number, price = (  # copy the values out before the session closes
             str(article.id),
             article.article_number,
             float(article.unit_price),
         )
 
-    def payload(aid):
+    def payload(aid):  # a valid request whose only variable is the article link
         return {
             "requestorName": "Rene Requester",
             "titleShortDescription": "Docking stations",
             "vendorName": "Hudson Systems Inc.",
             "vatId": "12-3456789",
-            "commodityGroupId": 29,
+            "commodityGroupId": 29,  # Hardware
             "totalCost": price * 2,
             "department": "IT",
             "orderLines": [
@@ -140,8 +142,8 @@ def test_request_records_catalog_article_and_rejects_foreign_ones():
     r = client.post("/requests", json=payload(article_id), headers=_auth(token))
     assert r.status_code == 201, r.text
     line = r.json()["order_lines"][0]
-    assert line["article_id"] == article_id
-    assert line["article_number"] == article_number
+    assert line["article_id"] == article_id  # stored
+    assert line["article_number"] == article_number  # and joined back for display
 
     # the link survives a reload
     r = client.get(f"/requests/{r.json()['id']}", headers=_auth(token))
