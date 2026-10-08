@@ -482,7 +482,10 @@ def test_activity_log_and_document():
     client.delete(f"/requests/{rid}", headers=_auth(admin))
 
 
-def test_extraction_without_api_key():
+def test_extraction_without_api_key(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "openai_api_key", "")  # the machine may have a key; the test must not
     r = client.post("/auth/signup", json={"email": "ex@example.com", "password": "secret123"})
     token = r.json()["access_token"]
 

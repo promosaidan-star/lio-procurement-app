@@ -44,7 +44,8 @@ def _name_ok(got: str, want: str) -> bool:
 def score(got: dict, want: dict) -> list[tuple[str, bool, str]]:
     checks: list[tuple[str, bool, str]] = []  # (label, passed, what we got)
     checks.append(("vendor", _name_ok(got["vendorName"], want["vendorName"]), got["vendorName"]))
-    checks.append(("tax id", got["vatId"] == want["vatId"], got["vatId"] or "(none)"))  # exact after normalisation
+    checks.append(("tax id", (got["vatId"] or "") == (want["vatId"] or ""), got["vatId"] or "(none)"))  # exact after normalisation; null == ""
+
     checks.append(("customer", _name_ok(got["department"], want["department"]), got["department"]))
     checks.append(
         ("total", _money_ok(got["totalCost"], want["totalCost"]), f"{got['totalCost']:.2f}")

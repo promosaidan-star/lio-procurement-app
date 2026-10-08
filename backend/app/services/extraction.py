@@ -100,18 +100,28 @@ def _build_prompt(pdf_text: str, taxonomy: str) -> str:
     return f"""Extract the purchase request from the quote below and classify it.
 
 RULES FOR THE FIELDS
-- vendor_name: the company ISSUING the quote (letterhead, "Vendor", signature, email domain). Never the
-  recipient. Use the trading name as printed; drop legal suffixes like Inc./LLC only if the document does.
-- customer: the company RECEIVING the quote ("Prepared for", "Bill to", "Quote recipient", the addressee).
-  Null if the document does not name one.
-- tax_id: the VENDOR's EIN / Federal Tax ID / TIN / VAT ID. Nine digits, formatted XX-XXXXXXX. Null if the
-  vendor's tax id is not printed. Do not use the customer's number, a seller's permit, LLC number, or a
-  bank routing/account number.
+- vendor_name: the company ISSUING the quote. Cues: "Thank you for your inquiry at X", the sales rep's
+  email domain (lisa@verdeform.example -> verdeform), product prefixes, "Terms and Conditions of X apply",
+  the signature, the footer. The address block at the TOP of a quote is often the RECIPIENT, not the
+  vendor: a block with "Customer No.", "Your inquiry of", "Attn:", "Dear Mr ..." is the customer. Use the
+  trading name as printed; drop legal suffixes like Inc./LLC only if the document does.
+- customer: the company RECEIVING the quote ("Prepared for", "Bill to", "Quote recipient", the addressee
+  block, the party with the "Customer No."). Null only if the document names no recipient at all.
+- tax_id: the VENDOR's EIN / Federal Tax ID / TIN / VAT ID exactly as printed (a US EIN is two digits, a
+  hyphen, seven digits). Null if the vendor's tax id is not printed; most quotes print none, and null is
+  the normal answer. NEVER output a placeholder, a mask, an example number, or the word null as text. Do not use the customer's number, a seller's permit, LLC number, or a bank
+  routing/account number.
 - order_lines: only items the customer would be CHARGED for if they accept the quote as offered:
-    * EXCLUDE alternatives ("Alt.", "Alternative to the preceding item", "optional", "instead of").
+    * EXCLUDE alternatives ("Alt.", "(Alt.)", "Alternative to the preceding item", "optional", "instead
+      of"). A row that reads "Alternative: ..." with no price is a HEADING: every item under it until the
+      next priced regular item is an alternative too. Unit prices marked "U.P." are alternatives.
+    * Item numbers (1, 2, 3, 1.1, 1.2) are NOT quantities. Rows with a number but no quantity and no
+      price are headings, not items.
     * EXCLUDE page subtotals, "carried forward", "page subtotal", and summary rows (subtotal, tax, grand total).
     * EXCLUDE upsell blurbs ("add X to your order for $79").
-    * INCLUDE shipping/delivery/installation ONLY when it is a numbered line item with its own price.
+    * INCLUDE shipping/delivery/installation ONLY when it is a numbered line item with its own price,
+      and then do NOT repeat it in the shipping field (shipping is only for a separate row in the totals
+      block that is not part of the items subtotal).
     * total_price is the line total AFTER any discount shown on that line; unit_price is before discount.
     * amount is the quantity as printed, fractional if fractional (e.g. 13.78 sq ft). unit written out
       ("ea." -> "pieces", "lic." -> "licenses", "lump sum" -> "lump sum").
@@ -126,7 +136,8 @@ RULES FOR THE FIELDS
 
 CLASSIFICATION
 Choose the SINGLE best commodity group for the PRIMARY item being bought from the list below and copy its
-name exactly. Base it on what the items ARE, not on who sells them. If nothing fits, use null and explain
+name exactly. Each line below is "Category: name; name; name". Copy one NAME from after the colon; the
+category label before the colon is never a valid answer. Base it on what the items ARE, not on who sells them. If nothing fits, use null and explain
 in classification_reason. Guidance: branded decor and furniture -> Office Equipment; brochures, giveaways,
 banners -> Promotional Materials; computers, laptops, monitors -> Hardware; licenses -> Software;
 machines for manufacturing -> Production Machinery.
@@ -210,6 +221,8 @@ def normalize_tax_id(value: str | None) -> str:
     if not value:  # None or empty
         return ""
     value = value.strip()
+    if not re.search(r"\d", value):  # "XX-XXXXXXX", "null", "N/A": a mask or a word, never an id
+        return ""
     if re.search(r"[A-Za-z]", value):
         return value  # EU-style VAT ids keep their country prefix untouched
     digits = re.sub(r"\D", "", value)  # keep digits only
@@ -218,12 +231,62 @@ def normalize_tax_id(value: str | None) -> str:
     return value  # unknown length: leave as printed
 
 
+def tax_id_in_text(tax_id: str, text: str) -> bool:
+    """True when the id's digits appear in the quote, allowing spaces/dashes between them."""
+    digits = re.sub(r"\D", "", tax_id or "")  # the id with separators stripped
+    if len(digits) < 7:  # too short to be a real id, or letters-only: do not judge
+        return True
+    pattern = r"[\s\-\.]?".join(re.escape(d) for d in digits)  # "94 1985704" and "94-1985704" both match
+    return re.search(pattern, text) is not None
+
+
 def _close_line(a: float, b: float) -> bool:
     return abs(a - b) <= max(1.0, LINE_TOLERANCE * max(abs(a), abs(b)))  # within 1.5 % or $1, whichever is larger
 
 
 def _close_total(a: float, b: float) -> bool:
     return abs(a - b) <= TOTAL_TOLERANCE  # within 5 cents
+
+
+_SHIPPING_WORDS = re.compile(r"(?i)\b(shipping|transport|delivery|freight|packing)\b")  # a shipping-like line
+
+
+def reconcile(ex: LlmExtraction) -> list[str]:
+    """Fix the two slips the model makes most, using the quote's own printed totals as the oracle.
+
+    Mutates ``ex`` in place and returns one note per correction so the user
+    sees what was changed. Nothing here guesses: a change is only made when
+    the printed subtotal or grand total proves it.
+    """
+    notes: list[str] = []  # what was corrected, in plain words
+
+    # (a) shipping counted twice: once as a numbered line, again in the shipping field
+    if ex.grand_total is not None and ex.shipping:  # both pieces of evidence present
+        base = ex.net_subtotal if ex.net_subtotal is not None else sum(l.total_price for l in ex.order_lines)
+        with_shipping = base + ex.shipping + (ex.tax or 0) + (ex.other_fees or 0)  # as the model reported it
+        without = base + (ex.tax or 0) + (ex.other_fees or 0)  # as if shipping were already in the lines
+        shipping_line = any(_SHIPPING_WORDS.search(l.position_description) for l in ex.order_lines)
+        if shipping_line and not _close_total(with_shipping, ex.grand_total) and _close_total(without, ex.grand_total):
+            notes.append(
+                f"Shipping of {ex.shipping:.2f} is already an order line; it was not added to the total again."
+            )
+            ex.shipping = None  # the line keeps it; the totals block no longer double counts it
+
+    # (b) one extra line (an alternative that slipped through) proven by the printed subtotal
+    if ex.net_subtotal is not None and len(ex.order_lines) >= 2:  # need a printed subtotal to prove it
+        lines_sum = sum(l.total_price for l in ex.order_lines)
+        if not _close_total(lines_sum, ex.net_subtotal):  # lines disagree with the subtotal
+            culprits = [  # lines whose removal makes the rest add up exactly
+                l for l in ex.order_lines if _close_total(lines_sum - l.total_price, ex.net_subtotal)
+            ]
+            if len(culprits) == 1:  # exactly one candidate: unambiguous
+                gone = culprits[0]
+                ex.order_lines = [l for l in ex.order_lines if l is not gone]  # drop it
+                notes.append(
+                    f'Removed "{gone.position_description[:40]}" ({gone.total_price:.2f}): it is not part of '
+                    f"the printed subtotal of {ex.net_subtotal:.2f}, so it is most likely an alternative."
+                )
+    return notes
 
 
 def check_arithmetic(ex: LlmExtraction) -> list[str]:
@@ -371,6 +434,10 @@ def extract_vendor_data(
         logger.exception("Error extracting vendor data")
         return ExtractionResponse(success=False, error=f"Extraction failed: {exc}")
 
+    corrections = reconcile(extraction)  # printed totals prove and fix the common slips
+    if extraction.tax_id and not tax_id_in_text(extraction.tax_id, text):  # invented, e.g. a textbook example EIN
+        corrections.append(f"Tax id {extraction.tax_id} is not printed on the quote; left blank.")
+        extraction.tax_id = None  # blank beats wrong: the form asks the user
     data = to_vendor_data(extraction, taxonomy)  # model shape -> wire shape
 
     note = None  # explanation shown to the user when a rule overrides the AI
@@ -389,6 +456,6 @@ def extract_vendor_data(
         success=True,
         data=data,
         missing_fields=missing_fields_for(data) or None,  # None instead of [] keeps the old envelope
-        warnings=check_arithmetic(extraction) or None,  # same
+        warnings=(corrections + check_arithmetic(extraction)) or None,  # corrections first, then what still fails
         classification_note=note,
     )

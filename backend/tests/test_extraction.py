@@ -12,6 +12,8 @@ import pytest  # parametrize, raises, monkeypatch
 
 from app.services import extraction as svc  # module handle so monkeypatch can swap _call_model
 from app.services.extraction import (  # the pure functions under test
+    reconcile,
+    tax_id_in_text,
     LlmExtraction,
     LlmOrderLine,
     base_name,
@@ -192,6 +194,68 @@ def _llm(**overrides) -> LlmExtraction:
     return LlmExtraction(**base)
 
 
+def test_normalize_tax_id_rejects_placeholders_and_words():
+    assert normalize_tax_id("XX-XXXXXXX") == ""  # the mask from a prompt, not an id
+    assert normalize_tax_id("null") == ""  # the word, not a value
+    assert normalize_tax_id("N/A") == ""
+
+
+def test_tax_id_must_be_printed_on_the_quote():
+    text = "Hollis Greenscapes EIN: 94 1985704 Seller's Permit: 333-571207"
+    assert tax_id_in_text("94-1985704", text)  # printed with a space, returned with a dash
+    assert tax_id_in_text("941985704", text)
+    assert not tax_id_in_text("12-3456789", text)  # the textbook example the model likes to invent
+    assert tax_id_in_text("DE123", text)  # too short to judge: pass through
+
+
+def test_reconcile_drops_shipping_counted_twice():
+    ex = _llm(
+        order_lines=[
+            LlmOrderLine(position_description="Moss panel", unit_price=1560, amount=1, unit="pieces", total_price=1560),
+            LlmOrderLine(position_description="Transport, packing and shipping", unit_price=320, amount=1, unit="pieces", total_price=320),
+        ],
+        net_subtotal=1880.0,
+        shipping=320.0,  # the slip: already a line above
+        tax=162.15,
+        grand_total=2042.15,
+    )
+    notes = reconcile(ex)
+    assert ex.shipping is None and "already an order line" in notes[0]
+    assert check_arithmetic(ex) == []  # totals now balance
+
+
+def test_reconcile_drops_the_one_line_the_subtotal_disproves():
+    ex = _llm(
+        order_lines=[
+            LlmOrderLine(position_description="Panel", unit_price=894.08, amount=1, unit="pieces", total_price=715.26),
+            LlmOrderLine(position_description="Logo horizontal", unit_price=622, amount=1, unit="pieces", total_price=622),
+            LlmOrderLine(position_description="Logo vertical (Alt.)", unit_price=430, amount=1, unit="pieces", total_price=430),
+        ],
+        net_subtotal=1337.26,
+        shipping=215.0,
+        tax=133.88,
+        grand_total=1686.14,
+    )
+    notes = reconcile(ex)
+    assert [l.position_description for l in ex.order_lines] == ["Panel", "Logo horizontal"]
+    assert "Logo vertical" in notes[0]
+
+
+def test_reconcile_leaves_ambiguous_cases_alone():
+    ex = _llm(
+        order_lines=[  # two lines of 100: removing either would match, so do nothing
+            LlmOrderLine(position_description="A", unit_price=100, amount=1, unit="pieces", total_price=100),
+            LlmOrderLine(position_description="B", unit_price=100, amount=1, unit="pieces", total_price=100),
+            LlmOrderLine(position_description="C", unit_price=50, amount=1, unit="pieces", total_price=50),
+        ],
+        net_subtotal=150.0,
+        shipping=None,
+        tax=None,
+        grand_total=150.0,
+    )
+    assert reconcile(ex) == [] and len(ex.order_lines) == 3
+
+
 def test_arithmetic_passes_on_a_consistent_quote_with_discount():
     assert check_arithmetic(_llm()) == []  # the discount must not raise a warning
 
@@ -247,7 +311,7 @@ def test_extraction_endpoint_with_stubbed_model(monkeypatch):
 
     r = client.post("/auth/signup", json={"email": "stub@example.com", "password": "secret123"})
     token = r.json()["access_token"]
-    r = client.post("/extraction", json={"text": "Quote 4120 ..."}, headers=_auth(token))
+    r = client.post("/extraction", json={"text": "Quote 4120 ... EIN: 94 1985704"}, headers=_auth(token))  # the id must be printed or the guard blanks it
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["success"] is True
