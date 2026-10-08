@@ -37,6 +37,9 @@ class OrganizationSettings(BaseModel):
     required_fields: list[ConfigurableRequiredField] = Field(default_factory=list)
     # Ordered: the first rule whose keyword matches wins (see services/classification.py).
     commodity_rules: list[CommodityRule] = Field(default_factory=list, max_length=200)
+    # Requests with a total strictly below this amount are approved automatically;
+    # None (the default) means every request waits for a buyer (see services/approval.py).
+    auto_approve_below: float | None = Field(default=None, ge=0)
 
 
 class OrganizationCreate(BaseModel):

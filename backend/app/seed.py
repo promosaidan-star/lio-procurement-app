@@ -148,13 +148,26 @@ ACME_COMMODITY_RULES: list[dict] = [
 ]
 
 
-def seed_commodity_rules(db: Session, organization_id: uuid.UUID) -> int:
-    """Install Acme's rules once; never overwrite rules an admin has edited."""
+# Acme's buyers should not sign off on small purchases (bonus task).
+ACME_AUTO_APPROVE_BELOW = 2000.0
+
+
+def seed_organization_settings(db: Session, organization_id: uuid.UUID) -> int:
+    """Install Acme's rules and threshold once; never overwrite values an admin edited."""
     org = db.get(Organization, organization_id)  # the dev organization
-    if org is None or "commodity_rules" in (org.settings or {}):  # already present (possibly edited): leave alone
+    if org is None:
         return 0
-    org.settings = {**(org.settings or {}), "commodity_rules": ACME_COMMODITY_RULES}  # new dict so SQLAlchemy sees the change
-    return 1
+    current = dict(org.settings or {})  # copy: a new dict is what makes SQLAlchemy notice the change
+    added = 0
+    if "commodity_rules" not in current:  # only when the key has never been set
+        current["commodity_rules"] = ACME_COMMODITY_RULES
+        added += 1
+    if "auto_approve_below" not in current:
+        current["auto_approve_below"] = ACME_AUTO_APPROVE_BELOW
+        added += 1
+    if added:
+        org.settings = current
+    return added
 
 
 def seed_organizations_and_accounts(db: Session) -> tuple[int, int]:
@@ -200,8 +213,8 @@ def seed(db: Session) -> dict[str, int]:
         "suppliers": seed_suppliers(db, dev_org_id) if dev_org_id else 0,
         # Articles reference suppliers by name, so this must run after suppliers.
         "articles": seed_articles(db, dev_org_id) if dev_org_id else 0,
-        # Acme's commodity booking rules live in its settings JSON.
-        "commodity_rules": seed_commodity_rules(db, dev_org_id) if dev_org_id else 0,
+        # Acme's commodity booking rules and approval threshold live in its settings JSON.
+        "organization_settings": seed_organization_settings(db, dev_org_id) if dev_org_id else 0,
         "organizations": orgs_created,
         "users": users_created,
     }

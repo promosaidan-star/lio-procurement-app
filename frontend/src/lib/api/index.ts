@@ -54,6 +54,8 @@ export interface CommodityRule {
 export interface OrganizationSettings {
   required_fields: ConfigurableRequiredField[];
   commodity_rules: CommodityRule[];
+  /** Requests with a total strictly below this are approved automatically; null = always ask a buyer. */
+  auto_approve_below: number | null;
 }
 
 export interface MembersResponse {

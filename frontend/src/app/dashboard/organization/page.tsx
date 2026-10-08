@@ -29,6 +29,8 @@ export default function OrganizationPage() {
   const [requiredFields, setRequiredFields] = useState<api.ConfigurableRequiredField[]>([]);
   // Commodity booking rules ("toner" -> Hardware). Saved together with requiredFields.
   const [rules, setRules] = useState<api.CommodityRule[]>([]);
+  // Auto-approval threshold; '' in the input means "no auto-approval".
+  const [threshold, setThreshold] = useState<string>('');
   const [newKeyword, setNewKeyword] = useState('');
   const [newGroupId, setNewGroupId] = useState<number | ''>('');
   const { data: commodityGroups } = useCommodityGroups();
@@ -61,6 +63,7 @@ export default function OrganizationPage() {
       setInvites(result.invites);
       setRequiredFields(settings.required_fields);
       setRules(settings.commodity_rules ?? []);
+      setThreshold(settings.auto_approve_below == null ? '' : String(settings.auto_approve_below));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load organization');
     }
@@ -108,11 +111,39 @@ export default function OrganizationPage() {
     setError('');
     setSuccess('');
     try {
-      const saved = await api.organizations.updateSettings({ required_fields: requiredFields, commodity_rules: next });
+      const saved = await api.organizations.updateSettings({
+        required_fields: requiredFields,
+        commodity_rules: next,
+        auto_approve_below: threshold === '' ? null : Number(threshold),
+      });
       setRules(saved.commodity_rules ?? []);
       setSuccess('Rules updated');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update rules');
+    }
+    setSavingSettings(false);
+  };
+
+  // Persist the auto-approval threshold (blank = every request needs a buyer).
+  const saveThreshold = async () => {
+    const value = threshold.trim() === '' ? null : Number(threshold);
+    if (value !== null && (Number.isNaN(value) || value < 0)) {
+      setError('Threshold must be a positive amount');
+      return;
+    }
+    setSavingSettings(true);
+    setError('');
+    setSuccess('');
+    try {
+      const saved = await api.organizations.updateSettings({
+        required_fields: requiredFields,
+        commodity_rules: rules,
+        auto_approve_below: value,
+      });
+      setThreshold(saved.auto_approve_below == null ? '' : String(saved.auto_approve_below));
+      setSuccess('Approval threshold updated');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update threshold');
     }
     setSavingSettings(false);
   };
@@ -143,7 +174,11 @@ export default function OrganizationPage() {
     setError('');
     setSuccess('');
     try {
-      const saved = await api.organizations.updateSettings({ required_fields: next, commodity_rules: rules });
+      const saved = await api.organizations.updateSettings({
+        required_fields: next,
+        commodity_rules: rules,
+        auto_approve_below: threshold === '' ? null : Number(threshold),
+      });
       setRequiredFields(saved.required_fields);
       setRules(saved.commodity_rules ?? []);
       setSuccess('Settings updated');
@@ -332,6 +367,28 @@ export default function OrganizationPage() {
                 </label>
               );
             })}
+          </div>
+
+          <h2 className="text-xl font-semibold tracking-tight text-ink mt-8">Approval Threshold</h2>
+          <p className="text-sm text-ink/55 mt-1 mb-4">
+            Requests with a total below this amount are approved automatically. Leave blank to require a
+            buyer for every request.
+          </p>
+          <div className="flex items-end gap-3 mb-2">
+            <div className="w-48">
+              <Input
+                label="Auto-approve below ($)"
+                type="number"
+                min="0"
+                step="1"
+                value={threshold}
+                onChange={(e) => setThreshold(e.target.value)}
+                placeholder="e.g. 2000"
+              />
+            </div>
+            <Button type="button" variant="outline" onClick={saveThreshold} disabled={savingSettings}>
+              Save threshold
+            </Button>
           </div>
 
           <h2 className="text-xl font-semibold tracking-tight text-ink mt-8">Commodity Booking Rules</h2>

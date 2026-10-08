@@ -412,6 +412,7 @@ def test_pdf_parse():
 
 
 def test_activity_log_and_document():
+    # Totals stay above Acme's $2,000 auto-approval threshold so the buyer step is exercised.
     from pypdf import PdfWriter
 
     admin = client.post(
@@ -421,9 +422,9 @@ def test_activity_log_and_document():
     payload = {
         "requestorName": "Alex Admin", "titleShortDescription": "Chairs",
         "vendorName": "FurnitureCo", "vatId": "12-0000001", "commodityGroupId": 15,
-        "totalCost": 500.0, "department": "Ops",
+        "totalCost": 5000.0, "department": "Ops",
         "orderLines": [
-            {"positionDescription": "Chair", "unitPrice": 250, "amount": 2, "unit": "pc", "totalPrice": 500}
+            {"positionDescription": "Chair", "unitPrice": 2500, "amount": 2, "unit": "pc", "totalPrice": 5000}
         ],
     }
     rid = client.post("/requests", json=payload, headers=_auth(admin)).json()["id"]
@@ -431,14 +432,14 @@ def test_activity_log_and_document():
     # edit two fields -> one 'updated' activity naming those fields
     updated = dict(payload)
     updated["title"] = "Office Chairs"
-    updated["totalCost"] = 600.0
+    updated["totalCost"] = 6000.0
     updated["orderLines"] = [
-        {"positionDescription": "Chair", "unitPrice": 300, "amount": 2, "unit": "pc", "totalPrice": 600}
+        {"positionDescription": "Chair", "unitPrice": 3000, "amount": 2, "unit": "pc", "totalPrice": 6000}
     ]
     # RequestUpdate uses "title" (not titleShortDescription)
     updated = {
         "requestorName": "Alex Admin", "title": "Office Chairs", "vendorName": "FurnitureCo",
-        "vatId": "12-0000001", "commodityGroupId": 15, "totalCost": 600.0, "department": "Ops",
+        "vatId": "12-0000001", "commodityGroupId": 15, "totalCost": 6000.0, "department": "Ops",
         "orderLines": updated["orderLines"],
     }
     r = client.put(f"/requests/{rid}", json=updated, headers=_auth(admin))
@@ -732,7 +733,7 @@ def test_org_settings_required_fields():
     # Default settings: nothing extra required.
     r = client.get("/organizations/me/settings", headers=_auth(token))
     assert r.status_code == 200
-    assert r.json() == {"required_fields": [], "commodity_rules": []}
+    assert r.json() == {"required_fields": [], "commodity_rules": [], "auto_approve_below": None}
 
     base_payload = {
         "requestorName": "S", "titleShortDescription": "T", "vendorName": "V",

@@ -17,6 +17,7 @@ from app.models import (
     RequestActivity,
     RequestDocument,
 )
+from app.services.approval import apply_approval_policy, auto_approve_threshold  # auto-approval below a threshold
 from app.services.classification import RuleHit, apply_commodity_rules  # org booking rules
 from app.schemas.requests import (
     ApprovalDecision,
@@ -122,6 +123,23 @@ def _rule_for(
     """The organization rule (if any) that decides this request's commodity group."""
     texts = [payload.title] + [line.position_description for line in payload.order_lines]  # title + every line
     return apply_commodity_rules(db, organization_id, texts)
+
+
+def _apply_approval_policy(
+    db: Session, request: ProcurementRequest, membership: OrganizationMember
+) -> None:
+    """Auto-approve (or un-approve) by the org's threshold and record it in the log."""
+    threshold = auto_approve_threshold(db, membership.organization_id)  # None = policy off
+    summary = apply_approval_policy(request, threshold)  # mutates the request when something changes
+    if summary:
+        _log_activity(
+            db,
+            request.id,
+            membership.user_id,
+            "approval_policy",
+            summary,
+            {"threshold": threshold, "total_cost": float(request.total_cost or 0)},
+        )
 
 
 def _log_rule(db: Session, request_id: uuid.UUID, actor_id: uuid.UUID, hit: RuleHit) -> None:
@@ -263,6 +281,7 @@ def create_request(
     _log_activity(db, request.id, membership.user_id, "created", "Request created")
     if hit and hit.commodity_group_id != payload.commodity_group_id:  # only log when the rule changed something
         _log_rule(db, request.id, membership.user_id, hit)
+    _apply_approval_policy(db, request, membership)  # small requests skip the buyer
     db.commit()
 
     request = _get_org_request(db, request.id, membership.organization_id)
@@ -320,6 +339,7 @@ def update_request(
         )
     if hit and "commodity_group_id" in changed:  # the rule, not the user, moved the group
         _log_rule(db, request.id, membership.user_id, hit)
+    _apply_approval_policy(db, request, membership)  # re-check: an edit may cross the threshold either way
     db.commit()
 
     request = _get_org_request(db, request_id, membership.organization_id)
