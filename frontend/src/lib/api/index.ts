@@ -60,6 +60,8 @@ export interface OrderLineInput {
   amount: number;
   unit: string;
   totalPrice: number;
+  /** Catalog article the line was taken from (negotiated price), if any. */
+  articleId?: string | null;
 }
 
 export interface CreateRequestInput {
@@ -134,6 +136,25 @@ export interface ArticlePage {
   total: number;
   limit: number;
   offset: number;
+}
+
+/** A catalog article offered for an order line, with its negotiated price. */
+export interface ArticleSuggestion {
+  articleId: string;
+  articleNumber: string;
+  description: string;
+  supplierId: string;
+  supplierName: string | null;
+  unitPrice: number;
+  currency: string;
+  unit: string;
+  score: number;
+  matchedTerms: string[];
+}
+
+export interface SuggestResponse {
+  /** One list per input line, in the same order. */
+  suggestions: ArticleSuggestion[][];
 }
 
 // ============================================================================
@@ -316,6 +337,11 @@ export const articles = {
 
   count(): Promise<{ count: number }> {
     return apiFetch('/articles/count');
+  },
+
+  /** Match free-text order lines against the org's catalog (negotiated prices). */
+  suggest(lines: { positionDescription: string }[], limit = 3): Promise<SuggestResponse> {
+    return apiFetch('/articles/suggest', { body: { lines, limit } });
   },
 };
 

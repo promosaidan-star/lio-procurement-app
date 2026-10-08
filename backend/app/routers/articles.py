@@ -5,7 +5,14 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.deps import get_current_membership
 from app.db.session import get_db
 from app.models import Article, OrganizationMember
-from app.schemas.articles import ArticleOut, ArticlePage
+from app.schemas.articles import (
+    ArticleOut,
+    ArticlePage,
+    ArticleSuggestion,
+    SuggestRequest,
+    SuggestResponse,
+)
+from app.services.catalog import CatalogIndex
 
 router = APIRouter(prefix="/articles", tags=["articles"])
 
@@ -74,3 +81,44 @@ def count_articles(
         or 0
     )
     return {"count": total}
+
+
+@router.post("/suggest", response_model=SuggestResponse, response_model_by_alias=True)
+def suggest_articles(
+    payload: SuggestRequest,
+    membership: OrganizationMember = Depends(get_current_membership),
+    db: Session = Depends(get_db),
+) -> SuggestResponse:
+    """Match free-text order lines against the organization's article catalog.
+
+    Returns, per line, the best-matching articles with their negotiated
+    prices (best match first, cheapest first among equal matches). Used by the
+    request form to offer "use the negotiated price" inline.
+    """
+    articles = list(
+        db.scalars(
+            select(Article)
+            .where(Article.organization_id == membership.organization_id)
+            .options(joinedload(Article.supplier))
+        )
+    )
+    index = CatalogIndex(articles)
+    suggestions = [
+        [
+            ArticleSuggestion(
+                article_id=m.article.id,
+                article_number=m.article.article_number,
+                description=m.article.description,
+                supplier_id=m.article.supplier_id,
+                supplier_name=m.article.supplier.name if m.article.supplier else None,
+                unit_price=float(m.article.unit_price),
+                currency=m.article.currency,
+                unit=m.article.unit,
+                score=m.score,
+                matched_terms=m.matched_terms,
+            )
+            for m in index.suggest(line.position_description, limit=payload.limit)
+        ]
+        for line in payload.lines
+    ]
+    return SuggestResponse(suggestions=suggestions)

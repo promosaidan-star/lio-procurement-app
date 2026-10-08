@@ -18,6 +18,8 @@ class OrderLineIn(BaseModel):
     amount: float
     unit: str
     total_price: float = Field(alias="totalPrice")
+    # Set when the line was taken from the organization's article catalog.
+    article_id: uuid.UUID | None = Field(default=None, alias="articleId")
 
 
 class RequestCreate(BaseModel):
@@ -73,6 +75,8 @@ class OrderLineOut(BaseModel):
     unit: str
     total_price: float
     line_order: int
+    article_id: uuid.UUID | None = None
+    article_number: str | None = None
     created_at: datetime
 
 
