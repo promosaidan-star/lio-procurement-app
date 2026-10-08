@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import * as api from '@/lib/api';
+import type { ArticleSuggestion } from '@/lib/api';
 import { useCommodityGroups } from '@/lib/hooks/useCommodityGroups';
 import { Button, Input, Alert, Loader } from '@/components/base';
 
@@ -13,7 +14,13 @@ interface OrderLine {
   amount: number;
   unit: string;
   totalPrice: number;
+  // Set when the line uses a negotiated catalog article.
+  articleId?: string | null;
+  articleNumber?: string | null;
+  supplierName?: string | null;
 }
+
+const usd = (n: number) => '$' + n.toFixed(2);
 
 export default function NewRequestPage() {
   const router = useRouter();
@@ -35,6 +42,34 @@ export default function NewRequestPage() {
   const [success, setSuccess] = useState('');
   const [warning, setWarning] = useState('');
   const [extracting, setExtracting] = useState(false);
+  // Catalog matches per order line (same index as orderLines).
+  const [suggestions, setSuggestions] = useState<ArticleSuggestion[][]>([]);
+
+  // Look up negotiated catalog articles whenever a line description changes
+  // (debounced, so typing does not fire a request per keystroke).
+  const descriptionsKey = JSON.stringify(orderLines.map((l) => l.positionDescription.trim()));
+  useEffect(() => {
+    const descriptions: string[] = JSON.parse(descriptionsKey);
+    if (descriptions.every((d) => d.length < 3)) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const result = await api.articles.suggest(
+          descriptions.map((positionDescription) => ({ positionDescription }))
+        );
+        if (!cancelled) setSuggestions(result.suggestions);
+      } catch {
+        if (!cancelled) setSuggestions([]); // suggestions are a convenience, never block the form
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [descriptionsKey]);
 
   // PDF parsing mutation
   const parsePDFMutation = useMutation({
@@ -52,7 +87,9 @@ export default function NewRequestPage() {
     const uploadedFile = e.target.files?.[0];
     if (!uploadedFile) return;
 
-    if (uploadedFile.type !== 'application/pdf') {
+    const isPdf =
+      uploadedFile.type === 'application/pdf' || uploadedFile.name.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
       setError('Please upload a PDF file');
       return;
     }
@@ -89,14 +126,28 @@ export default function NewRequestPage() {
         setCommodityGroupId(extracted.commodityGroupId);
       }
 
-      // Show warnings for missing fields
-      if (extractionResult.missingFields && extractionResult.missingFields.length > 0) {
-        setWarning(
-          `⚠️ Could not extract: ${extractionResult.missingFields.join(', ')}. Please fill in these fields manually.`
-        );
+      // Show warnings for missing fields and for checks that did not add up
+      const notes: string[] = [];
+      const missing = extractionResult.missingFields ?? [];
+      // Empty is often the right answer (many quotes print no tax id); say so instead of "could not".
+      const notPrinted = missing.filter((f) => f !== 'Commodity Group');
+      if (notPrinted.length > 0) {
+        notes.push(`Not printed on the quote: ${notPrinted.join(', ')}. Fill in if you have it.`);
+      }
+      if (missing.includes('Commodity Group')) {
+        notes.push('No commodity group matched. Pick one from the list.');
+      }
+      if (extractionResult.warnings && extractionResult.warnings.length > 0) {
+        notes.push(...extractionResult.warnings);
+      }
+      if (notes.length > 0) {
+        setWarning(`⚠️ ${notes.join(' ')}`);
       }
 
-      setSuccess('✓ PDF extracted successfully! Review and submit.');
+      setSuccess(
+        '✓ PDF extracted successfully! Review and submit.' +
+          (extractionResult.classificationNote ? ' ' + extractionResult.classificationNote : '')
+      );
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       console.error('Extraction error:', err);
@@ -125,7 +176,13 @@ export default function NewRequestPage() {
   const updateOrderLine = (index: number, field: keyof OrderLine, value: string | number) => {
     const updated = [...orderLines];
     updated[index] = { ...updated[index], [field]: value };
-    
+
+    // Editing the description or the price means the line no longer reflects
+    // the catalog article it was taken from.
+    if (field === 'positionDescription' || field === 'unitPrice') {
+      updated[index] = { ...updated[index], articleId: null, articleNumber: null, supplierName: null };
+    }
+
     // Auto-calculate total price
     if (field === 'unitPrice' || field === 'amount') {
       updated[index].totalPrice = updated[index].unitPrice * updated[index].amount;
@@ -136,6 +193,23 @@ export default function NewRequestPage() {
     // Update total cost
     const newTotal = updated.reduce((sum, line) => sum + line.totalPrice, 0);
     setTotalCost(newTotal);
+  };
+
+  // Take the negotiated price (and unit) from a catalog article
+  const applySuggestion = (index: number, s: ArticleSuggestion) => {
+    const updated = [...orderLines];
+    const line = updated[index];
+    updated[index] = {
+      ...line,
+      unitPrice: s.unitPrice,
+      unit: s.unit,
+      totalPrice: s.unitPrice * line.amount,
+      articleId: s.articleId,
+      articleNumber: s.articleNumber,
+      supplierName: s.supplierName,
+    };
+    setOrderLines(updated);
+    setTotalCost(updated.reduce((sum, l) => sum + l.totalPrice, 0));
   };
 
   // Remove order line
@@ -175,7 +249,14 @@ export default function NewRequestPage() {
         commodityGroupId: commodityGroupId,
         totalCost,
         department,
-        orderLines,
+        orderLines: orderLines.map((l) => ({
+          positionDescription: l.positionDescription,
+          unitPrice: l.unitPrice,
+          amount: l.amount,
+          unit: l.unit,
+          totalPrice: l.totalPrice,
+          articleId: l.articleId ?? null,
+        })),
       });
 
       // Attach the original PDF (if one was uploaded) so it shows on the detail page.
@@ -224,7 +305,7 @@ export default function NewRequestPage() {
           <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-accent-deep/50 transition-colors">
             <input
               type="file"
-              accept="application/pdf"
+              accept="application/pdf,.pdf"
               onChange={handleFileChange}
               className="hidden"
               id="pdf-upload"
@@ -423,6 +504,39 @@ export default function NewRequestPage() {
                       placeholder="pcs, licenses, etc."
                     />
                   </div>
+
+                  {line.articleId ? (
+                    <div className="mt-3 rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-800">
+                      Negotiated price applied: catalog {line.articleNumber}
+                      {line.supplierName ? ' from ' + line.supplierName : ''}
+                    </div>
+                  ) : (
+                    (suggestions[index]?.length ?? 0) > 0 && (
+                      <div className="mt-3 rounded-lg bg-accent-soft/20 border border-accent/30 px-3 py-2">
+                        <p className="text-xs font-medium text-ink/70 mb-1">
+                          You already have negotiated prices for this on catalog:
+                        </p>
+                        <ul className="space-y-1">
+                          {suggestions[index].map((s) => (
+                            <li key={s.articleId} className="flex items-center justify-between gap-3 text-sm">
+                              <span className="text-ink">
+                                {s.description}
+                                <span className="text-ink/55">
+                                  {' · '}
+                                  {s.supplierName ?? 'catalog'} · {usd(s.unitPrice)} / {s.unit}
+                                  {line.unitPrice > s.unitPrice &&
+                                    ' (saves ' + usd(line.unitPrice - s.unitPrice) + ' per ' + s.unit + ')'}
+                                </span>
+                              </span>
+                              <Button type="button" size="sm" variant="outline" onClick={() => applySuggestion(index, s)}>
+                                Use this price
+                              </Button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )
+                  )}
 
                   <div className="mt-2 text-right">
                     <span className="text-sm text-gray-600">Total: </span>

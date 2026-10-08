@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import * as api from '@/lib/api';
 import { Button, Input, Alert } from '@/components/base';
+import { useCommodityGroups } from '@/lib/hooks/useCommodityGroups';
 import type { OrganizationMemberWithProfile, OrganizationInvite } from '@/types/database';
 
 type Tab = 'members' | 'settings';
@@ -26,6 +27,19 @@ export default function OrganizationPage() {
   const [organizationName, setOrganizationName] = useState<string>('');
   const [role, setRole] = useState<api.MemberRole | null>(null);
   const [requiredFields, setRequiredFields] = useState<api.ConfigurableRequiredField[]>([]);
+  // Commodity booking rules ("toner" -> Hardware). Saved together with requiredFields.
+  const [rules, setRules] = useState<api.CommodityRule[]>([]);
+  // Auto-approval threshold; '' in the input means "no auto-approval".
+  const [threshold, setThreshold] = useState<string>('');
+  const [newKeyword, setNewKeyword] = useState('');
+  const [newGroupId, setNewGroupId] = useState<number | ''>('');
+  const { data: commodityGroups } = useCommodityGroups();
+  // The taxonomy has ~2,000 rows but only ~380 distinct names; variants carry a " — " suffix.
+  const canonicalGroups = (commodityGroups ?? []).filter((g) => !/\s[—–-]\s/.test(g.name));
+  const groupLabel = (id: number) => {
+    const g = commodityGroups?.find((x) => x.id === id);
+    return g ? g.category + ' · ' + g.name : '#' + id;
+  };
   const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
@@ -48,6 +62,8 @@ export default function OrganizationPage() {
       setMembers(result.members);
       setInvites(result.invites);
       setRequiredFields(settings.required_fields);
+      setRules(settings.commodity_rules ?? []);
+      setThreshold(settings.auto_approve_below == null ? '' : String(settings.auto_approve_below));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load organization');
     }
@@ -89,6 +105,61 @@ export default function OrganizationPage() {
     }
   };
 
+  // Persist a new rule list (add or remove) together with the required-field settings.
+  const saveRules = async (next: api.CommodityRule[]) => {
+    setSavingSettings(true);
+    setError('');
+    setSuccess('');
+    try {
+      const saved = await api.organizations.updateSettings({
+        required_fields: requiredFields,
+        commodity_rules: next,
+        auto_approve_below: threshold === '' ? null : Number(threshold),
+      });
+      setRules(saved.commodity_rules ?? []);
+      setSuccess('Rules updated');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update rules');
+    }
+    setSavingSettings(false);
+  };
+
+  // Persist the auto-approval threshold (blank = every request needs a buyer).
+  const saveThreshold = async () => {
+    const value = threshold.trim() === '' ? null : Number(threshold);
+    if (value !== null && (Number.isNaN(value) || value < 0)) {
+      setError('Threshold must be a positive amount');
+      return;
+    }
+    setSavingSettings(true);
+    setError('');
+    setSuccess('');
+    try {
+      const saved = await api.organizations.updateSettings({
+        required_fields: requiredFields,
+        commodity_rules: rules,
+        auto_approve_below: value,
+      });
+      setThreshold(saved.auto_approve_below == null ? '' : String(saved.auto_approve_below));
+      setSuccess('Approval threshold updated');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update threshold');
+    }
+    setSavingSettings(false);
+  };
+
+  const addRule = async () => {
+    const keyword = newKeyword.trim();
+    if (keyword.length < 2 || newGroupId === '') return;
+    await saveRules([...rules, { keyword, commodity_group_id: Number(newGroupId) }]);
+    setNewKeyword('');
+    setNewGroupId('');
+  };
+
+  const removeRule = async (index: number) => {
+    await saveRules(rules.filter((_, i) => i !== index));
+  };
+
   const REQUIRABLE_FIELDS: { key: api.ConfigurableRequiredField; label: string }[] = [
     { key: 'vat_id', label: 'Tax ID' },
     { key: 'department', label: 'Department' },
@@ -103,8 +174,13 @@ export default function OrganizationPage() {
     setError('');
     setSuccess('');
     try {
-      const saved = await api.organizations.updateSettings({ required_fields: next });
+      const saved = await api.organizations.updateSettings({
+        required_fields: next,
+        commodity_rules: rules,
+        auto_approve_below: threshold === '' ? null : Number(threshold),
+      });
       setRequiredFields(saved.required_fields);
+      setRules(saved.commodity_rules ?? []);
       setSuccess('Settings updated');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update settings');
@@ -291,6 +367,92 @@ export default function OrganizationPage() {
                 </label>
               );
             })}
+          </div>
+
+          <h2 className="text-xl font-semibold tracking-tight text-ink mt-8">Approval Threshold</h2>
+          <p className="text-sm text-ink/55 mt-1 mb-4">
+            Requests with a total below this amount are approved automatically. Leave blank to require a
+            buyer for every request.
+          </p>
+          <div className="flex items-end gap-3 mb-2">
+            <div className="w-48">
+              <Input
+                label="Auto-approve below ($)"
+                type="number"
+                min="0"
+                step="1"
+                value={threshold}
+                onChange={(e) => setThreshold(e.target.value)}
+                placeholder="e.g. 2000"
+              />
+            </div>
+            <Button type="button" variant="outline" onClick={saveThreshold} disabled={savingSettings}>
+              Save threshold
+            </Button>
+          </div>
+
+          <h2 className="text-xl font-semibold tracking-tight text-ink mt-8">Commodity Booking Rules</h2>
+          <p className="text-sm text-ink/55 mt-1 mb-4">
+            When a request title or order line contains every word of a keyword, it is booked under
+            the chosen commodity group, whatever the AI suggested. The first matching rule wins.
+          </p>
+          {rules.length === 0 ? (
+            <p className="text-sm text-ink/55 mb-4">No rules yet.</p>
+          ) : (
+            <ul className="space-y-2 mb-4">
+              {rules.map((rule, index) => (
+                <li
+                  key={index}
+                  className="flex items-center justify-between rounded-xl border border-line px-4 py-3 text-sm"
+                >
+                  <span className="text-ink">
+                    <span className="font-medium">&ldquo;{rule.keyword}&rdquo;</span>
+                    <span className="text-ink/55"> → {groupLabel(rule.commodity_group_id)}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => removeRule(index)}
+                    disabled={savingSettings}
+                    className="text-red-600 hover:text-red-700 text-sm"
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+            <div className="md:col-span-2">
+              <Input
+                label="Keyword"
+                value={newKeyword}
+                onChange={(e) => setNewKeyword(e.target.value)}
+                placeholder="e.g. cable ties"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-ink mb-1">Book under</label>
+              <select
+                value={newGroupId}
+                onChange={(e) => setNewGroupId(e.target.value === '' ? '' : Number(e.target.value))}
+                className="w-full rounded-lg border border-line px-3 py-2 text-sm"
+              >
+                <option value="">Select a commodity group</option>
+                {canonicalGroups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.category} · {g.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={addRule}
+              disabled={savingSettings || newKeyword.trim().length < 2 || newGroupId === ''}
+            >
+              + Add rule
+            </Button>
           </div>
         </div>
       )}

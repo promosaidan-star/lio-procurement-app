@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.deps import get_current_membership, require_buyer_or_admin
 from app.db.session import get_db
 from app.models import (
+    Article,
     CommodityGroup,
     OrderLine,
     Organization,
@@ -16,6 +17,8 @@ from app.models import (
     RequestActivity,
     RequestDocument,
 )
+from app.services.approval import apply_approval_policy, auto_approve_threshold  # auto-approval below a threshold
+from app.services.classification import RuleHit, apply_commodity_rules  # org booking rules
 from app.schemas.requests import (
     ApprovalDecision,
     RequestActivityOut,
@@ -44,9 +47,31 @@ _FIELD_LABELS = {
 
 def _load_request_options():
     return (
-        selectinload(ProcurementRequest.order_lines),
+        selectinload(ProcurementRequest.order_lines).selectinload(OrderLine.article),  # article_number on each line without N+1
         selectinload(ProcurementRequest.commodity_group),
     )
+
+
+def _validate_article_ids(
+    db: Session, organization_id: uuid.UUID, lines: list
+) -> None:
+    """Every referenced catalog article must exist in this organization."""
+    wanted = {line.article_id for line in lines if line.article_id is not None}  # ids the client sent
+    if not wanted:  # no catalog links on this request
+        return
+    found = set(  # ids that exist AND belong to the caller's org, in one query
+        db.scalars(
+            select(Article.id).where(
+                Article.id.in_(wanted), Article.organization_id == organization_id
+            )
+        )
+    )
+    missing = wanted - found  # anything made up or from another tenant
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Order line references an article that is not in your catalog.",
+        )
 
 
 def _get_org_request(
@@ -90,6 +115,43 @@ def _enforce_required_fields(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Missing fields required by your organization: {', '.join(missing)}",
         )
+
+
+def _rule_for(
+    db: Session, organization_id: uuid.UUID, payload: RequestCreate | RequestUpdate
+) -> RuleHit | None:
+    """The organization rule (if any) that decides this request's commodity group."""
+    texts = [payload.title] + [line.position_description for line in payload.order_lines]  # title + every line
+    return apply_commodity_rules(db, organization_id, texts)
+
+
+def _apply_approval_policy(
+    db: Session, request: ProcurementRequest, membership: OrganizationMember
+) -> None:
+    """Auto-approve (or un-approve) by the org's threshold and record it in the log."""
+    threshold = auto_approve_threshold(db, membership.organization_id)  # None = policy off
+    summary = apply_approval_policy(request, threshold)  # mutates the request when something changes
+    if summary:
+        _log_activity(
+            db,
+            request.id,
+            membership.user_id,
+            "approval_policy",
+            summary,
+            {"threshold": threshold, "total_cost": float(request.total_cost or 0)},
+        )
+
+
+def _log_rule(db: Session, request_id: uuid.UUID, actor_id: uuid.UUID, hit: RuleHit) -> None:
+    """Audit entry so a buyer can see why the group differs from what was submitted."""
+    _log_activity(
+        db,
+        request_id,
+        actor_id,
+        "commodity_rule_applied",
+        f'Commodity group set to "{hit.commodity_group_name}" by organization rule "{hit.keyword}"',
+        {"keyword": hit.keyword, "commodity_group_id": hit.commodity_group_id},
+    )
 
 
 def _log_activity(
@@ -183,6 +245,9 @@ def create_request(
 ) -> RequestOut:
     _validate_commodity_group(db, payload.commodity_group_id)
     _enforce_required_fields(db, membership.organization_id, payload)
+    _validate_article_ids(db, membership.organization_id, payload.order_lines)
+    hit = _rule_for(db, membership.organization_id, payload)  # org rule beats the submitted group
+    commodity_group_id = hit.commodity_group_id if hit else payload.commodity_group_id
 
     # Vendor fields are already cleaned up during extraction, so we can persist
     # them directly here.
@@ -192,7 +257,7 @@ def create_request(
         title=payload.title,
         vendor_name=payload.vendor_name,
         vat_id=payload.vat_id,
-        commodity_group_id=payload.commodity_group_id,
+        commodity_group_id=commodity_group_id,
         total_cost=payload.total_cost,
         department=payload.department,
         organization_id=membership.organization_id,
@@ -207,12 +272,16 @@ def create_request(
             unit=line.unit,
             total_price=line.total_price,
             line_order=index + 1,
+            article_id=line.article_id,  # catalog link, validated above
         )
         for index, line in enumerate(payload.order_lines)
     ]
     db.add(request)
     db.flush()
     _log_activity(db, request.id, membership.user_id, "created", "Request created")
+    if hit and hit.commodity_group_id != payload.commodity_group_id:  # only log when the rule changed something
+        _log_rule(db, request.id, membership.user_id, hit)
+    _apply_approval_policy(db, request, membership)  # small requests skip the buyer
     db.commit()
 
     request = _get_org_request(db, request.id, membership.organization_id)
@@ -229,6 +298,10 @@ def update_request(
     request = _get_org_request(db, request_id, membership.organization_id)
     _validate_commodity_group(db, payload.commodity_group_id)
     _enforce_required_fields(db, membership.organization_id, payload)
+    _validate_article_ids(db, membership.organization_id, payload.order_lines)
+    hit = _rule_for(db, membership.organization_id, payload)  # same rule check as on create
+    if hit:
+        payload.commodity_group_id = hit.commodity_group_id  # so the change log and the row agree
 
     changed = _changed_fields(request, payload)
 
@@ -249,6 +322,7 @@ def update_request(
             unit=line.unit,
             total_price=line.total_price,
             line_order=index + 1,
+            article_id=line.article_id,  # catalog link, validated above
         )
         for index, line in enumerate(payload.order_lines)
     ]
@@ -263,6 +337,9 @@ def update_request(
             f"Updated {', '.join(labels)}",
             {"changed_fields": changed},
         )
+    if hit and "commodity_group_id" in changed:  # the rule, not the user, moved the group
+        _log_rule(db, request.id, membership.user_id, hit)
+    _apply_approval_policy(db, request, membership)  # re-check: an edit may cross the threshold either way
     db.commit()
 
     request = _get_org_request(db, request_id, membership.organization_id)

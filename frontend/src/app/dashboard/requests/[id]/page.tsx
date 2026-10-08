@@ -199,7 +199,9 @@ export default function RequestDetailPage() {
               {titleCase(request.status)}
             </span>
             <span className={`inline-flex px-2.5 py-1 text-xs font-semibold rounded-full ${APPROVAL_BADGE[request.approval_status]}`}>
-              {titleCase(request.approval_status)}
+              {request.approval_status === 'approved' && !request.approved_by
+                ? 'Auto-approved'
+                : titleCase(request.approval_status)}
             </span>
           </div>
         </div>
@@ -268,6 +270,11 @@ export default function RequestDetailPage() {
                     <p className="text-sm font-medium text-ink">{i + 1}. {line.position_description}</p>
                     <p className="text-sm text-ink/55 mt-0.5">
                       {line.amount} {line.unit} × {usd(line.unit_price)}
+                      {line.article_number && (
+                        <span className="ml-2 inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700">
+                          Catalog {line.article_number} · negotiated price
+                        </span>
+                      )}
                     </p>
                   </div>
                   <p className="text-sm font-semibold text-ink">{usd(line.total_price)}</p>

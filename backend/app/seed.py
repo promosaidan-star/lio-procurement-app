@@ -136,6 +136,40 @@ def seed_articles(db: Session, organization_id: uuid.UUID) -> int:
     return len(new)
 
 
+# Acme's booking conventions (task 3). "Office Supplies" does not exist in the
+# commodity taxonomy, so small software subscriptions map to the closest group,
+# Office Equipment (15), until the admin confirms or a group is added.
+ACME_COMMODITY_RULES: list[dict] = [
+    {"keyword": "cable ties", "commodity_group_id": 11},  # Electrical Engineering
+    {"keyword": "zip ties", "commodity_group_id": 11},  # same thing, other name
+    {"keyword": "toner", "commodity_group_id": 29},  # IT Hardware
+    {"keyword": "software subscription", "commodity_group_id": 15},  # see note above
+    {"keyword": "saas subscription", "commodity_group_id": 15},
+]
+
+
+# Acme's buyers should not sign off on small purchases (bonus task).
+ACME_AUTO_APPROVE_BELOW = 2000.0
+
+
+def seed_organization_settings(db: Session, organization_id: uuid.UUID) -> int:
+    """Install Acme's rules and threshold once; never overwrite values an admin edited."""
+    org = db.get(Organization, organization_id)  # the dev organization
+    if org is None:
+        return 0
+    current = dict(org.settings or {})  # copy: a new dict is what makes SQLAlchemy notice the change
+    added = 0
+    if "commodity_rules" not in current:  # only when the key has never been set
+        current["commodity_rules"] = ACME_COMMODITY_RULES
+        added += 1
+    if "auto_approve_below" not in current:
+        current["auto_approve_below"] = ACME_AUTO_APPROVE_BELOW
+        added += 1
+    if added:
+        org.settings = current
+    return added
+
+
 def seed_organizations_and_accounts(db: Session) -> tuple[int, int]:
     """Create the tenants and their accounts (keyed by slug / email)."""
     orgs_created = 0
@@ -179,6 +213,8 @@ def seed(db: Session) -> dict[str, int]:
         "suppliers": seed_suppliers(db, dev_org_id) if dev_org_id else 0,
         # Articles reference suppliers by name, so this must run after suppliers.
         "articles": seed_articles(db, dev_org_id) if dev_org_id else 0,
+        # Acme's commodity booking rules and approval threshold live in its settings JSON.
+        "organization_settings": seed_organization_settings(db, dev_org_id) if dev_org_id else 0,
         "organizations": orgs_created,
         "users": users_created,
     }

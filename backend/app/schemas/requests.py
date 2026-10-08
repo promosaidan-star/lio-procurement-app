@@ -18,6 +18,8 @@ class OrderLineIn(BaseModel):
     amount: float
     unit: str
     total_price: float = Field(alias="totalPrice")
+    # Set when the line was taken from the organization's article catalog.
+    article_id: uuid.UUID | None = Field(default=None, alias="articleId")  # validated against the org's catalog
 
 
 class RequestCreate(BaseModel):
@@ -73,6 +75,8 @@ class OrderLineOut(BaseModel):
     unit: str
     total_price: float
     line_order: int
+    article_id: uuid.UUID | None = None  # catalog link, if the line used a negotiated article
+    article_number: str | None = None  # read from the OrderLine.article_number property
     created_at: datetime
 
 

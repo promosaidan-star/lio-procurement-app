@@ -2,13 +2,27 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 MemberRole = Literal["admin", "buyer", "requester"]
 
 # Request fields an organization may optionally mark as required. (The other
 # request fields are always required by the app.)
 ConfigurableRequiredField = Literal["vat_id", "department"]
+
+
+class CommodityRule(BaseModel):
+    """'Whenever a request mentions <keyword>, book it under <group>'."""
+
+    model_config = ConfigDict(extra="forbid")  # typos in keys are rejected, not silently stored
+
+    keyword: str = Field(min_length=2, max_length=80)  # words that must all appear in the title or a line
+    commodity_group_id: int  # the group the organization insists on; existence checked in the router
+
+    @field_validator("keyword")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return value.strip()  # "cable ties " and "cable ties" are the same rule
 
 
 class OrganizationSettings(BaseModel):
@@ -21,6 +35,11 @@ class OrganizationSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     required_fields: list[ConfigurableRequiredField] = Field(default_factory=list)
+    # Ordered: the first rule whose keyword matches wins (see services/classification.py).
+    commodity_rules: list[CommodityRule] = Field(default_factory=list, max_length=200)
+    # Requests with a total strictly below this amount are approved automatically;
+    # None (the default) means every request waits for a buyer (see services/approval.py).
+    auto_approve_below: float | None = Field(default=None, ge=0)
 
 
 class OrganizationCreate(BaseModel):

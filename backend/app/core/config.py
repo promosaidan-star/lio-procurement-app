@@ -22,6 +22,10 @@ class Settings(BaseSettings):
 
     # OpenAI
     openai_api_key: str | None = None
+    # Any OpenAI-compatible endpoint works (e.g. Gemini's compatibility layer at
+    # https://generativelanguage.googleapis.com/v1beta/openai/ with a Gemini key
+    # and OPENAI_MODEL=gemini-2.5-flash). None = api.openai.com.
+    openai_base_url: str | None = None
     # gpt-4o-mini keeps extraction snappy — latency matters on the upload flow,
     # and larger models were noticeably slower without a real quality gain.
     openai_model: str = "gpt-4o-mini"

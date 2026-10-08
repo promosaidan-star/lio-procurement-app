@@ -45,8 +45,17 @@ export interface MyOrganization {
 // Request fields an org may optionally mark as required (see backend settings).
 export type ConfigurableRequiredField = 'vat_id' | 'department';
 
+/** "Whenever a request mentions <keyword>, book it under <commodity group>". First match wins. */
+export interface CommodityRule {
+  keyword: string;
+  commodity_group_id: number;
+}
+
 export interface OrganizationSettings {
   required_fields: ConfigurableRequiredField[];
+  commodity_rules: CommodityRule[];
+  /** Requests with a total strictly below this are approved automatically; null = always ask a buyer. */
+  auto_approve_below: number | null;
 }
 
 export interface MembersResponse {
@@ -60,6 +69,8 @@ export interface OrderLineInput {
   amount: number;
   unit: string;
   totalPrice: number;
+  /** Catalog article the line was taken from (negotiated price), if any. */
+  articleId?: string | null;
 }
 
 export interface CreateRequestInput {
@@ -100,6 +111,10 @@ export interface ExtractionResponse {
   data?: ExtractedVendorData;
   error?: string;
   missingFields?: string[];
+  /** Human-readable checks that did not add up (e.g. line totals vs. grand total). */
+  warnings?: string[];
+  /** Set when one of the organization's commodity rules overrode the AI's classification. */
+  classificationNote?: string | null;
 }
 
 export interface Supplier {
@@ -132,6 +147,25 @@ export interface ArticlePage {
   total: number;
   limit: number;
   offset: number;
+}
+
+/** A catalog article offered for an order line, with its negotiated price. */
+export interface ArticleSuggestion {
+  articleId: string;
+  articleNumber: string;
+  description: string;
+  supplierId: string;
+  supplierName: string | null;
+  unitPrice: number;
+  currency: string;
+  unit: string;
+  score: number;
+  matchedTerms: string[];
+}
+
+export interface SuggestResponse {
+  /** One list per input line, in the same order. */
+  suggestions: ArticleSuggestion[][];
 }
 
 // ============================================================================
@@ -314,6 +348,11 @@ export const articles = {
 
   count(): Promise<{ count: number }> {
     return apiFetch('/articles/count');
+  },
+
+  /** Match free-text order lines against the org's catalog (negotiated prices). */
+  suggest(lines: { positionDescription: string }[], limit = 3): Promise<SuggestResponse> {
+    return apiFetch('/articles/suggest', { body: { lines, limit } });
   },
 };
 

@@ -96,8 +96,18 @@ class OrderLine(Base, CreatedAtMixin):
     unit: Mapped[str] = mapped_column(Text, nullable=False)
     total_price: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     line_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The negotiated catalog article this line was taken from, if any
+    # (migration 007). Lets buyers see whether agreements are being used.
+    article_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("articles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     request: Mapped["ProcurementRequest"] = relationship(back_populates="order_lines")
+    article: Mapped["Article | None"] = relationship()  # loaded with selectinload in the requests router
+
+    @property
+    def article_number(self) -> str | None:  # pydantic's from_attributes reads this like a column
+        return self.article.article_number if self.article else None
 
 
 class RequestActivity(Base, CreatedAtMixin):
@@ -140,5 +150,6 @@ class RequestDocument(Base, CreatedAtMixin):
     content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
 
 
-# Imported for the type-only forward reference in relationships above.
+# Imported for the type-only forward references in relationships above.
+from app.models.article import Article  # noqa: E402,F401
 from app.models.commodity_group import CommodityGroup  # noqa: E402,F401
