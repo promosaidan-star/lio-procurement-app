@@ -12,6 +12,7 @@ import pytest  # parametrize, raises, monkeypatch
 
 from app.services import extraction as svc  # module handle so monkeypatch can swap _call_model
 from app.services.extraction import (  # the pure functions under test
+    _schema_for,
     openai_base_url,
     reconcile,
     tax_id_in_text,
@@ -208,6 +209,18 @@ def test_empty_base_url_means_openai(monkeypatch):
     assert openai_base_url() == "https://api.openai.com/v1"
     monkeypatch.setattr(svc.settings, "openai_base_url", "https://example.test/v1")
     assert openai_base_url() == "https://example.test/v1"
+
+
+def test_schema_only_allows_taxonomy_names_for_the_group():
+    from pydantic import ValidationError
+
+    schema = _schema_for(("Hardware", "Production Machinery"))
+    base = _llm().model_dump()
+    assert schema.model_validate({**base, "commodity_group_name": "Hardware"}).commodity_group_name == "Hardware"
+    assert schema.model_validate({**base, "commodity_group_name": None}).commodity_group_name is None
+    with pytest.raises(ValidationError):  # a category label, which the model used to answer with
+        schema.model_validate({**base, "commodity_group_name": "Production"})
+    assert "enum" in str(schema.model_json_schema())  # the restriction is in the schema the API sees
 
 
 def test_tax_id_must_be_printed_on_the_quote():

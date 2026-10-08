@@ -128,11 +128,14 @@ export default function NewRequestPage() {
 
       // Show warnings for missing fields and for checks that did not add up
       const notes: string[] = [];
-      if (extractionResult.missingFields && extractionResult.missingFields.length > 0) {
-        notes.push(
-          // Empty is often the right answer (many quotes print no tax id); say so instead of "could not".
-          `Not printed on the quote: ${extractionResult.missingFields.join(', ')}. Fill in if you have it.`
-        );
+      const missing = extractionResult.missingFields ?? [];
+      // Empty is often the right answer (many quotes print no tax id); say so instead of "could not".
+      const notPrinted = missing.filter((f) => f !== 'Commodity Group');
+      if (notPrinted.length > 0) {
+        notes.push(`Not printed on the quote: ${notPrinted.join(', ')}. Fill in if you have it.`);
+      }
+      if (missing.includes('Commodity Group')) {
+        notes.push('No commodity group matched. Pick one from the list.');
       }
       if (extractionResult.warnings && extractionResult.warnings.length > 0) {
         notes.push(...extractionResult.warnings);

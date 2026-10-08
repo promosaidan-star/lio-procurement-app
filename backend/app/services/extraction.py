@@ -28,9 +28,11 @@ import logging  # diagnostics for fuzzy matches, unknown names and failures
 import re  # variant-suffix stripping and tax-id normalisation
 import uuid  # organization id type
 from dataclasses import dataclass  # lightweight container for the compacted taxonomy
+from functools import lru_cache  # one constrained schema per taxonomy, built once
+from typing import Literal, Optional  # the allowed-names type for the schema
 
 from openai import LengthFinishReasonError, OpenAI  # client + the "output was cut off" error
-from pydantic import BaseModel  # strict schema the model must fill
+from pydantic import BaseModel, create_model  # strict schema the model must fill; create_model narrows it per taxonomy
 from sqlalchemy import select  # query the commodity groups
 from sqlalchemy.orm import Session  # DB session type
 
@@ -159,6 +161,7 @@ class Taxonomy:
     prompt_block: str  # "Category: name; name; ..." lines sent to the model
     by_name: dict[str, CommodityGroup]  # lower-cased canonical name -> row
     all_ids: set[int]  # every row id, for validation
+    names: tuple[str, ...]  # canonical display names, sorted; the only values the model may answer with
 
 
 def base_name(name: str) -> str:
@@ -191,6 +194,7 @@ def build_taxonomy(groups: list[CommodityGroup]) -> Taxonomy:
         prompt_block="\n".join(lines),
         by_name=canonical,
         all_ids={g.id for g in groups},
+        names=tuple(sorted(base_name(g.name) for g in canonical.values())),  # hashable, for the schema cache
     )
 
 
@@ -384,6 +388,23 @@ def openai_base_url() -> str:
     return value or OPENAI_DEFAULT_BASE_URL
 
 
+@lru_cache(maxsize=8)  # the taxonomy rarely changes; build the narrowed schema once per distinct name set
+def _schema_for(names: tuple[str, ...]) -> type[LlmExtraction]:
+    """LlmExtraction with commodity_group_name limited to the taxonomy's names, or null.
+
+    The prompt already says "copy a name, never the category label", and
+    gpt-4o-mini still answered "Production" for a grinding machine. With the
+    allowed names in the JSON schema itself, strict structured outputs make a
+    category label impossible to return.
+    """
+    allowed = Literal[names]  # type: ignore[valid-type]  # Literal["Hardware", "Software", ...]
+    return create_model(  # subclass with one field narrowed; everything else inherited
+        "LlmExtractionConstrained",
+        __base__=LlmExtraction,
+        commodity_group_name=(Optional[allowed], ...),  # required key, value one of the names or null
+    )
+
+
 def _call_model(pdf_text: str, taxonomy: Taxonomy) -> LlmExtraction:
     """One structured-output call. Separated so tests can replace it."""
     client = OpenAI(
@@ -398,7 +419,7 @@ def _call_model(pdf_text: str, taxonomy: Taxonomy) -> LlmExtraction:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _build_prompt(pdf_text, taxonomy.prompt_block)},
         ],
-        response_format=LlmExtraction,  # strict JSON schema derived from the model class
+        response_format=_schema_for(taxonomy.names),  # strict JSON schema; group name limited to the taxonomy
         max_completion_tokens=6000,  # enough for dozens of lines; LengthFinishReasonError if exceeded
         temperature=0,  # deterministic copying, not creativity
     )
