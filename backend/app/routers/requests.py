@@ -17,6 +17,7 @@ from app.models import (
     RequestActivity,
     RequestDocument,
 )
+from app.services.classification import RuleHit, apply_commodity_rules  # org booking rules
 from app.schemas.requests import (
     ApprovalDecision,
     RequestActivityOut,
@@ -115,6 +116,26 @@ def _enforce_required_fields(
         )
 
 
+def _rule_for(
+    db: Session, organization_id: uuid.UUID, payload: RequestCreate | RequestUpdate
+) -> RuleHit | None:
+    """The organization rule (if any) that decides this request's commodity group."""
+    texts = [payload.title] + [line.position_description for line in payload.order_lines]  # title + every line
+    return apply_commodity_rules(db, organization_id, texts)
+
+
+def _log_rule(db: Session, request_id: uuid.UUID, actor_id: uuid.UUID, hit: RuleHit) -> None:
+    """Audit entry so a buyer can see why the group differs from what was submitted."""
+    _log_activity(
+        db,
+        request_id,
+        actor_id,
+        "commodity_rule_applied",
+        f'Commodity group set to "{hit.commodity_group_name}" by organization rule "{hit.keyword}"',
+        {"keyword": hit.keyword, "commodity_group_id": hit.commodity_group_id},
+    )
+
+
 def _log_activity(
     db: Session,
     request_id: uuid.UUID,
@@ -207,6 +228,8 @@ def create_request(
     _validate_commodity_group(db, payload.commodity_group_id)
     _enforce_required_fields(db, membership.organization_id, payload)
     _validate_article_ids(db, membership.organization_id, payload.order_lines)
+    hit = _rule_for(db, membership.organization_id, payload)  # org rule beats the submitted group
+    commodity_group_id = hit.commodity_group_id if hit else payload.commodity_group_id
 
     # Vendor fields are already cleaned up during extraction, so we can persist
     # them directly here.
@@ -216,7 +239,7 @@ def create_request(
         title=payload.title,
         vendor_name=payload.vendor_name,
         vat_id=payload.vat_id,
-        commodity_group_id=payload.commodity_group_id,
+        commodity_group_id=commodity_group_id,
         total_cost=payload.total_cost,
         department=payload.department,
         organization_id=membership.organization_id,
@@ -238,6 +261,8 @@ def create_request(
     db.add(request)
     db.flush()
     _log_activity(db, request.id, membership.user_id, "created", "Request created")
+    if hit and hit.commodity_group_id != payload.commodity_group_id:  # only log when the rule changed something
+        _log_rule(db, request.id, membership.user_id, hit)
     db.commit()
 
     request = _get_org_request(db, request.id, membership.organization_id)
@@ -255,6 +280,9 @@ def update_request(
     _validate_commodity_group(db, payload.commodity_group_id)
     _enforce_required_fields(db, membership.organization_id, payload)
     _validate_article_ids(db, membership.organization_id, payload.order_lines)
+    hit = _rule_for(db, membership.organization_id, payload)  # same rule check as on create
+    if hit:
+        payload.commodity_group_id = hit.commodity_group_id  # so the change log and the row agree
 
     changed = _changed_fields(request, payload)
 
@@ -290,6 +318,8 @@ def update_request(
             f"Updated {', '.join(labels)}",
             {"changed_fields": changed},
         )
+    if hit and "commodity_group_id" in changed:  # the rule, not the user, moved the group
+        _log_rule(db, request.id, membership.user_id, hit)
     db.commit()
 
     request = _get_org_request(db, request_id, membership.organization_id)

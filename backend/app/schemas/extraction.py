@@ -45,3 +45,6 @@ class ExtractionResponse(BaseModel):
     # shipping vs. grand total). The data is still returned; the user is asked
     # to double-check these before submitting.
     warnings: list[str] | None = None
+    # Set when one of the organization's commodity rules overrode the AI's
+    # classification, e.g. 'Booked under "Hardware" by your rule for "toner"'.
+    classification_note: str | None = Field(default=None, alias="classificationNote")

@@ -45,8 +45,15 @@ export interface MyOrganization {
 // Request fields an org may optionally mark as required (see backend settings).
 export type ConfigurableRequiredField = 'vat_id' | 'department';
 
+/** "Whenever a request mentions <keyword>, book it under <commodity group>". First match wins. */
+export interface CommodityRule {
+  keyword: string;
+  commodity_group_id: number;
+}
+
 export interface OrganizationSettings {
   required_fields: ConfigurableRequiredField[];
+  commodity_rules: CommodityRule[];
 }
 
 export interface MembersResponse {
@@ -104,6 +111,8 @@ export interface ExtractionResponse {
   missingFields?: string[];
   /** Human-readable checks that did not add up (e.g. line totals vs. grand total). */
   warnings?: string[];
+  /** Set when one of the organization's commodity rules overrode the AI's classification. */
+  classificationNote?: string | null;
 }
 
 export interface Supplier {

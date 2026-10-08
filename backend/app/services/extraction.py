@@ -26,6 +26,7 @@ from __future__ import annotations  # forward references in type hints
 import difflib  # fuzzy matching of the model's chosen group name to the catalog
 import logging  # diagnostics for fuzzy matches, unknown names and failures
 import re  # variant-suffix stripping and tax-id normalisation
+import uuid  # organization id type
 from dataclasses import dataclass  # lightweight container for the compacted taxonomy
 
 from openai import LengthFinishReasonError, OpenAI  # client + the "output was cut off" error
@@ -40,6 +41,7 @@ from app.schemas.extraction import (  # wire-format models returned to the front
     ExtractionResponse,
     OrderLineData,
 )
+from app.services.classification import apply_commodity_rules  # per-org "always book X under Y" rules
 
 logger = logging.getLogger(__name__)  # module logger
 
@@ -307,6 +309,7 @@ def _call_model(pdf_text: str, taxonomy: Taxonomy) -> LlmExtraction:
     """One structured-output call. Separated so tests can replace it."""
     client = OpenAI(
         api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,  # None -> OpenAI; set for a compatible provider such as Gemini
         timeout=REQUEST_TIMEOUT_SECONDS,  # per-request ceiling
         max_retries=MAX_RETRIES,  # SDK retries 408/409/429/5xx and connection errors
     )
@@ -326,8 +329,14 @@ def _call_model(pdf_text: str, taxonomy: Taxonomy) -> LlmExtraction:
     return parsed
 
 
-def extract_vendor_data(pdf_text: str, db: Session) -> ExtractionResponse:
-    """Extract vendor data and classify the commodity group in one AI call."""
+def extract_vendor_data(
+    pdf_text: str, db: Session, organization_id: uuid.UUID | None = None
+) -> ExtractionResponse:
+    """Extract vendor data and classify the commodity group in one AI call.
+
+    ``organization_id`` enables that organization's commodity rules; None
+    (scripts, tests) means the AI's classification stands.
+    """
     if not pdf_text or not pdf_text.strip():  # nothing to work with
         return ExtractionResponse(success=False, error="No text provided for extraction")
 
@@ -363,9 +372,23 @@ def extract_vendor_data(pdf_text: str, db: Session) -> ExtractionResponse:
         return ExtractionResponse(success=False, error=f"Extraction failed: {exc}")
 
     data = to_vendor_data(extraction, taxonomy)  # model shape -> wire shape
+
+    note = None  # explanation shown to the user when a rule overrides the AI
+    hit = apply_commodity_rules(  # the organization's own booking conventions beat the AI
+        db, organization_id, [data.title] + [line.position_description for line in data.order_lines]
+    )
+    if hit is not None:
+        data.commodity_group_id = hit.commodity_group_id
+        data.commodity_group_name = hit.commodity_group_name
+        note = (
+            f"Commodity group set to \"{hit.commodity_group_name}\" by your organization's "
+            f"rule for \"{hit.keyword}\"."
+        )
+
     return ExtractionResponse(
         success=True,
         data=data,
         missing_fields=missing_fields_for(data) or None,  # None instead of [] keeps the old envelope
         warnings=check_arithmetic(extraction) or None,  # same
+        classification_note=note,
     )

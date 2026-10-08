@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_current_membership, get_current_user, require_org_admin
 from app.db.session import get_db
 from app.models import (
+    CommodityGroup,  # rule targets are validated against it
     Organization,
     OrganizationInvite,
     OrganizationMember,
@@ -95,6 +96,15 @@ def update_settings(
     db: Session = Depends(get_db),
 ) -> OrganizationSettings:
     org = db.get(Organization, membership.organization_id)
+    wanted = {rule.commodity_group_id for rule in payload.commodity_rules}  # groups the rules point at
+    if wanted:  # a rule must point at a real commodity group
+        found = set(db.scalars(select(CommodityGroup.id).where(CommodityGroup.id.in_(wanted))))
+        unknown = sorted(wanted - found)
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown commodity group id(s) in rules: {unknown}",
+            )
     org.settings = payload.model_dump()
     db.commit()
     return payload

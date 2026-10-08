@@ -140,7 +140,10 @@ export default function NewRequestPage() {
         setWarning(`⚠️ ${notes.join(' ')}`);
       }
 
-      setSuccess('✓ PDF extracted successfully! Review and submit.');
+      setSuccess(
+        '✓ PDF extracted successfully! Review and submit.' +
+          (extractionResult.classificationNote ? ' ' + extractionResult.classificationNote : '')
+      );
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       console.error('Extraction error:', err);
