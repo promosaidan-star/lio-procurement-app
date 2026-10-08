@@ -12,6 +12,7 @@ import pytest  # parametrize, raises, monkeypatch
 
 from app.services import extraction as svc  # module handle so monkeypatch can swap _call_model
 from app.services.extraction import (  # the pure functions under test
+    openai_base_url,
     reconcile,
     tax_id_in_text,
     LlmExtraction,
@@ -198,6 +199,15 @@ def test_normalize_tax_id_rejects_placeholders_and_words():
     assert normalize_tax_id("XX-XXXXXXX") == ""  # the mask from a prompt, not an id
     assert normalize_tax_id("null") == ""  # the word, not a value
     assert normalize_tax_id("N/A") == ""
+
+
+def test_empty_base_url_means_openai(monkeypatch):
+    monkeypatch.setattr(svc.settings, "openai_base_url", "")  # what docker-compose passes when unset
+    assert openai_base_url() == "https://api.openai.com/v1"
+    monkeypatch.setattr(svc.settings, "openai_base_url", "  ")
+    assert openai_base_url() == "https://api.openai.com/v1"
+    monkeypatch.setattr(svc.settings, "openai_base_url", "https://example.test/v1")
+    assert openai_base_url() == "https://example.test/v1"
 
 
 def test_tax_id_must_be_printed_on_the_quote():

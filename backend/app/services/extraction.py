@@ -368,11 +368,27 @@ def missing_fields_for(data: ExtractedVendorData) -> list[str]:
 # ---------------------------------------------------------------------------
 # Model call
 # ---------------------------------------------------------------------------
+OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"  # what the SDK uses when nothing is configured
+
+
+def openai_base_url() -> str:
+    """The configured base URL, or OpenAI's own when none is set.
+
+    docker-compose passes ``OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}``, so an unset
+    variable reaches the container as an EMPTY STRING, and the client would try
+    to call a URL with no host ("Request URL is missing an http:// protocol").
+    """
+    value = (settings.openai_base_url or "").strip()  # "" and None both mean "not set"
+    # The SDK also reads OPENAI_BASE_URL from the environment when given None, and would
+    # pick up the same empty string, so the real default is passed explicitly.
+    return value or OPENAI_DEFAULT_BASE_URL
+
+
 def _call_model(pdf_text: str, taxonomy: Taxonomy) -> LlmExtraction:
     """One structured-output call. Separated so tests can replace it."""
     client = OpenAI(
         api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,  # None -> OpenAI; set for a compatible provider such as Gemini
+        base_url=openai_base_url(),  # OpenAI unless a compatible provider such as Gemini is configured
         timeout=REQUEST_TIMEOUT_SECONDS,  # per-request ceiling
         max_retries=MAX_RETRIES,  # SDK retries 408/409/429/5xx and connection errors
     )
