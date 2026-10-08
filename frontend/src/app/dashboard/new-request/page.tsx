@@ -130,7 +130,8 @@ export default function NewRequestPage() {
       const notes: string[] = [];
       if (extractionResult.missingFields && extractionResult.missingFields.length > 0) {
         notes.push(
-          `Could not extract: ${extractionResult.missingFields.join(', ')}. Please fill in these fields manually.`
+          // Empty is often the right answer (many quotes print no tax id); say so instead of "could not".
+          `Not printed on the quote: ${extractionResult.missingFields.join(', ')}. Fill in if you have it.`
         );
       }
       if (extractionResult.warnings && extractionResult.warnings.length > 0) {
