@@ -100,6 +100,8 @@ export interface ExtractionResponse {
   data?: ExtractedVendorData;
   error?: string;
   missingFields?: string[];
+  /** Human-readable checks that did not add up (e.g. line totals vs. grand total). */
+  warnings?: string[];
 }
 
 export interface Supplier {

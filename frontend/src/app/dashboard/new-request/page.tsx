@@ -52,7 +52,9 @@ export default function NewRequestPage() {
     const uploadedFile = e.target.files?.[0];
     if (!uploadedFile) return;
 
-    if (uploadedFile.type !== 'application/pdf') {
+    const isPdf =
+      uploadedFile.type === 'application/pdf' || uploadedFile.name.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
       setError('Please upload a PDF file');
       return;
     }
@@ -89,11 +91,18 @@ export default function NewRequestPage() {
         setCommodityGroupId(extracted.commodityGroupId);
       }
 
-      // Show warnings for missing fields
+      // Show warnings for missing fields and for checks that did not add up
+      const notes: string[] = [];
       if (extractionResult.missingFields && extractionResult.missingFields.length > 0) {
-        setWarning(
-          `⚠️ Could not extract: ${extractionResult.missingFields.join(', ')}. Please fill in these fields manually.`
+        notes.push(
+          `Could not extract: ${extractionResult.missingFields.join(', ')}. Please fill in these fields manually.`
         );
+      }
+      if (extractionResult.warnings && extractionResult.warnings.length > 0) {
+        notes.push(...extractionResult.warnings);
+      }
+      if (notes.length > 0) {
+        setWarning(`⚠️ ${notes.join(' ')}`);
       }
 
       setSuccess('✓ PDF extracted successfully! Review and submit.');
@@ -224,7 +233,7 @@ export default function NewRequestPage() {
           <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-accent-deep/50 transition-colors">
             <input
               type="file"
-              accept="application/pdf"
+              accept="application/pdf,.pdf"
               onChange={handleFileChange}
               className="hidden"
               id="pdf-upload"

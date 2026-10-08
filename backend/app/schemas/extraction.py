@@ -41,3 +41,7 @@ class ExtractionResponse(BaseModel):
     data: ExtractedVendorData | None = None
     error: str | None = None
     missing_fields: list[str] | None = Field(default=None, alias="missingFields")
+    # Checks that did not add up (line totals vs. subtotal, subtotal + tax +
+    # shipping vs. grand total). The data is still returned; the user is asked
+    # to double-check these before submitting.
+    warnings: list[str] | None = None

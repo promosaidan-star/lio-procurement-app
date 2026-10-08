@@ -1,0 +1,68 @@
+{
+  "_comment": "Ground truth read by hand from the five customer quotes. totalCost = grand total payable as stated on the quote. orderLines exclude alternatives ('Alt.' / 'Alternative to the preceding item') and carried-forward subtotals.",
+  "QT-4120-Cust-14918.pdf": {
+    "vendorName": "Greenmantle Moss Studio",
+    "vatId": "85-3252405",
+    "department": "Lio Technologies",
+    "orderLines": [
+      {"positionDescription": "Moss Art Panel, Mixed Moss 63 x 31.5 in", "amount": 1, "unitPrice": 894.08, "totalPrice": 715.26},
+      {"positionDescription": "Logo integration \"asklio\" horizontal", "amount": 1, "unitPrice": 622.00, "totalPrice": 622.00}
+    ],
+    "netSubtotal": 1337.26,
+    "totalCost": 1686.14,
+    "commodityGroupName": "Office Equipment",
+    "traps": ["item 5 is an alternative (vertical logo) and must not be a line", "item 2 has a -20% discount so qty x unit != total", "bank details and EIN appear in the footer on both pages"]
+  },
+  "QT-OF2312380-Cust-57692.pdf": {
+    "vendorName": "verdeform",
+    "vatId": "",
+    "department": "Lio Technologies",
+    "orderLines": [
+      {"positionDescription": "verdeform CUSTOM - sq ft Module - forest & ball moss", "amount": 13.78, "unitPrice": 52.00, "totalPrice": 716.56},
+      {"positionDescription": "verdeform CUSTOM - edge greening forest moss per lin ft", "amount": 15.75, "unitPrice": 7.65, "totalPrice": 120.49},
+      {"positionDescription": "Logo acrylic white 3/16 in \"ask Lio\"", "amount": 1, "unitPrice": 350.00, "totalPrice": 350.00}
+    ],
+    "netSubtotal": 1187.05,
+    "totalCost": 1413.10,
+    "commodityGroupName": "Office Equipment",
+    "traps": ["no tax id anywhere on the quote", "fractional quantities in sq ft and lin ft", "legal entity (Bloomcraft Interiors, Inc.) differs from the brand (verdeform)"]
+  },
+  "QuoteA0492_23.Pdf": {
+    "vendorName": "Hollis Greenscapes",
+    "vatId": "94-1985704",
+    "department": "Lio Technologies",
+    "orderLines": [
+      {"positionDescription": "Moss panel \"70:30\" with \"askLio\" lettering", "amount": 1, "unitPrice": 1560.00, "totalPrice": 1560.00},
+      {"positionDescription": "Transport, packing and shipping", "amount": 1, "unitPrice": 320.00, "totalPrice": 320.00}
+    ],
+    "netSubtotal": 1880.00,
+    "totalCost": 2042.15,
+    "commodityGroupName": "Office Equipment",
+    "traps": ["items 1.1a and 1.1b are alternatives priced U.P. and must not be lines", "'Carried forward $1,560.00' is a page subtotal, not a line", "EIN is printed as '94 1985704' with a space", "uppercase .Pdf extension"]
+  },
+  "Quote_1__Lio_Technologies_Inc__1x_MBA___2214703918.pdf": {
+    "vendorName": "Apple",
+    "vatId": "94-2404110",
+    "department": "Lio Technologies",
+    "orderLines": [
+      {"positionDescription": "13\" MacBook Air: Apple M2 Chip - Space Gray", "amount": 1, "unitPrice": 1409.06, "totalPrice": 1409.06}
+    ],
+    "netSubtotal": 1409.06,
+    "totalCost": 1534.59,
+    "commodityGroupName": "Hardware",
+    "traps": ["broken xref table (pypdf warns 'wrong pointing object')", "configuration bullets listed before the line item in raw text order", "$4.00 eWaste fee on top of tax"]
+  },
+  "Quote_Hartwell_Cleveland_ACME_Grinding_Machine.pdf": {
+    "vendorName": "Hartwell Industrial Tools",
+    "vatId": "",
+    "department": "ACME Corp",
+    "orderLines": [
+      {"positionDescription": "Grinding machine HW-GS 450", "amount": 1, "unitPrice": 15000.00, "totalPrice": 15000.00},
+      {"positionDescription": "Delivery and installation", "amount": 1, "unitPrice": 2000.00, "totalPrice": 2000.00}
+    ],
+    "netSubtotal": 17000.00,
+    "totalCost": 18402.50,
+    "commodityGroupName": "Production Machinery",
+    "traps": ["no tax id", "customer name only appears in a page header near the end of the text", "the only quote above the $2,000 approval threshold"]
+  }
+}
